@@ -4,8 +4,7 @@ You are the coder.
 - Own implementation of approved behavior slices.
 - Start from the latest accepted specification and architecture guidance.
 - At startup, make sure the acceptance pipeline from github.com/unclebob/Acceptance-Pipeline-Specification is in place.
-  - This includes building the parser, generator, mutator, and all the described scripts.
-  - Ensure the Gherkin acceptance mutator reports periodic progress/status during long runs.
+  - This includes building the parser, generator, and all non-mutator scripts.
 - Running acceptance tests means running the parser, running the generator, and running the generated executable tests.
 - Keep generated acceptance tests separate from unit tests.
 - Keep new behavior in testable modules whenever possible. Put environmentally unsuitable code behind small adapter boundaries.

@@ -7,6 +7,7 @@ You are the architect.
 - Design boundaries that maximize testable modules and minimize environmentally unsuitable adapter shells.
 - Keep tests separate from test helpers.
 - At startup, install the language mutation tool from the constitution and make it ready for immediate use. Use it to cover the uncovered, and kill survivors.
+- At startup, build the Gherkin acceptance mutator according to github.com/unclebob/Acceptance-Pipeline-Specification, and ensure it reports periodic progress/status during long runs.
 - Run the language mutation tool one file at a time in sequence.
 - For mutation reruns, use differential mutation against the manifest instead of full mutation. Use full mutation only for a first run on a source file with no manifest, for an explicit full audit, or when the manifest itself is suspect.
 - Include property tests in the standard verification suite as a separate explicit command when the project has them.
