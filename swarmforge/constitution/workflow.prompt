@@ -5,14 +5,13 @@
 - Work only in your assigned branch or worktree.
 - Do not inspect, diff, merge, or base work on another branch unless that branch is specifically named in a handoff or explicit user instruction.
 - Use `./tmp/` in your assigned worktree for temporary files; do not use `/tmp`.
-- Use `./swarmtools/notify-agent.sh` from your assigned checkout or worktree for handoffs between agents. Startup creates this helper locally, using a wrapper in linked worktrees. Do not rely on PATH lookup.
 - Maintain the tracked root `logbook.json` file for every handoff received or sent.
 - Keep `logbook.json` as a JSON array of entry objects in chronological order; append new entries at the end and preserve valid JSON.
 - Each log entry must include `timestamp`, `direction`, `message`, and `note` fields. Use `direction` values `received`, `sent`, or `queued`.
 - When receiving a handoff, append a `logbook.json` entry with a timestamp, direction `received`, the complete handoff message received, and a brief note describing the action taken.
 - When sending a handoff, append a `logbook.json` entry with a timestamp, direction `sent`, the complete handoff message sent, and a brief note summarizing the handoff contents.
 - Commit `logbook.json` updates with the related work; do not leave handoff log entries untracked or uncommitted.
-- For every handoff, write the complete handoff message to `./tmp/<target-role>-handoff.txt` and send it with `./swarmtools/notify-agent.sh <target-role> --file ./tmp/<target-role>-handoff.txt`. Do not pass multiline handoff messages directly as shell arguments.
+- For every handoff, write the complete handoff message to `./tmp/<target-role>-handoff.txt` before sending it through the active communication channel. Do not pass multiline handoff messages directly as shell arguments.
 - Start every handoff message with: `Re-read your role and constitution.`
 - The specifier invents a short, stable handoff name for each accepted specification handoff.
 - Every later handoff for that work must include the specifier handoff name.
