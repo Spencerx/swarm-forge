@@ -82,7 +82,7 @@ SwarmForge is a lightweight, tmux-based orchestration layer that:
 - Creates one tmux session per configured role and opens a terminal surface for each role when the selected backend supports it
 - Reads behavior from project-local `swarmforge/roles/<role>.prompt` files plus a layered `swarmforge/constitution.prompt`
 - Supports per-role backends such as `claude`, `codex`, `copilot`, or `grok`
-- Puts the shared `swarmforge/scripts/` directory on each agent's `PATH`, including `notify-agent.sh` for active swarm handoffs
+- Puts the shared `swarmforge/scripts/` directory on each agent's `PATH`, including handoff helpers for active swarm communication
 - Creates git worktrees under `.worktrees/` for roles assigned to dedicated worktree names
 - Initializes a git repository in a new working directory when needed
 - Keeps all swarm state local to the working directory in `.swarmforge/`
@@ -126,9 +126,45 @@ In a runnable branch:
 3. Startup validates the configured role prompts, helper scripts, and terminal adapters.
 4. If the target directory is not already a git repository, startup initializes one and creates the first commit.
 5. Startup creates one git worktree per configured role under `.worktrees/`, unless the role is assigned to `master` or `none`.
-6. Startup puts `swarmforge/scripts/` on each agent's `PATH`, so agents call `notify-agent.sh` directly for handoffs without generating helper scripts in their worktrees.
+6. Startup puts `swarmforge/scripts/` on each agent's `PATH`, so agents use `send-handoff.sh`, `receive-handoff.sh`, and `notify-agent.sh` without generating helper scripts in their worktrees.
 7. SwarmForge creates tmux sessions, opens terminal windows, and launches each configured backend in its assigned worktree.
-8. Roles communicate through handoff files and `notify-agent.sh`.
+8. Roles communicate through sequenced handoff files. `send-handoff.sh` assigns message ids and sequence numbers, archives sent messages, records logbook entries, and calls `notify-agent.sh`; `receive-handoff.sh` validates ordering and requests resends when gaps are detected.
+
+## Handoff Helpers
+
+Agents should use the higher-level handoff helpers instead of calling `notify-agent.sh` directly.
+
+To send a handoff, write the role-specific body to a file and run:
+
+```sh
+send-handoff.sh <target-role> --file ./tmp/<target-role>-handoff.txt
+```
+
+The helper wraps the body with protocol fields:
+
+```text
+message type: handoff
+message id: handoff-YYYYMMDD-HHMMSS-sender-target-NNNNNN-XXXXXX
+sender role: sender
+target role: target
+message sequence: NNNNNN
+```
+
+Sequence numbers are per sender-target stream. Sent messages are archived in the sender's worktree under `.swarmforge/handoffs/sent/` so they can be replayed later.
+
+When an agent receives a handoff, it should save the complete incoming message and run:
+
+```sh
+receive-handoff.sh --file ./tmp/incoming-handoff.txt
+```
+
+If the sequence is exactly one greater than the last processed message from that sender, the helper records the message and reports that it is OK to process. If the sequence has a gap, the helper archives the out-of-order message, records a queued logbook entry, sends a `resend-request` for the missing range including the out-of-order message, and tells the agent not to process it.
+
+`notify-agent.sh` remains the low-level tmux transport and accepts only file-based messages:
+
+```sh
+notify-agent.sh <target-role-or-index> --file <message-file>
+```
 
 ## The `swarmforge.conf` File
 
