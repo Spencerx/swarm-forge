@@ -82,7 +82,7 @@ SwarmForge is a lightweight, tmux-based orchestration layer that:
 - Creates one tmux session per configured role and opens a terminal surface for each role when the selected backend supports it
 - Reads behavior from project-local `swarmforge/<role>.prompt` files plus a layered `swarmforge/constitution.prompt`
 - Supports per-role backends such as `claude`, `codex`, `copilot`, or `grok`
-- Creates a project-local `swarmtools/` directory with notification helpers for the active swarm
+- Provides `notify-agent.sh` from the shared `swarmforge/scripts/` directory for active swarm handoffs
 - Creates git worktrees under `.worktrees/` for roles assigned to dedicated worktree names
 - Initializes a git repository in a new working directory and creates a first commit with `logs/` and `agent_context/` ignored
 - Keeps all swarm state local to the working directory in `.swarmforge/`
@@ -125,7 +125,7 @@ In a runnable branch:
 3. Startup validates the configured role prompts, helper scripts, and terminal adapters.
 4. If the target directory is not already a git repository, startup initializes one and creates the first commit.
 5. Startup creates one git worktree per configured role under `.worktrees/`, unless the role is assigned to `master` or `none`.
-6. Startup creates `swarmtools/notify-agent.sh` for handoffs between agents.
+6. Startup puts the shared scripts directory on each agent's `PATH`, including `notify-agent.sh` for handoffs between agents.
 7. SwarmForge creates tmux sessions, opens terminal windows, and launches each configured backend in its assigned worktree.
 8. Roles communicate through handoff files and `notify-agent.sh`.
 

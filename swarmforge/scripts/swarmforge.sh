@@ -14,7 +14,6 @@ WORKING_DIR="${1:-$PWD}"
 WORKING_DIR="$(cd "$WORKING_DIR" && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SWARM_FORGE_DIR="$WORKING_DIR/swarmforge"
-SWARM_TOOLS_DIR="$WORKING_DIR/swarmtools"
 WORKTREES_DIR="$WORKING_DIR/.worktrees"
 CONFIG_FILE="$SWARM_FORGE_DIR/swarmforge.conf"
 ROLES_DIR="$SWARM_FORGE_DIR/roles"
@@ -105,7 +104,6 @@ ensure_initial_gitignore() {
     cat > "$gitignore_file" <<'EOF'
 .swarmforge/
 .worktrees/
-swarmtools/
 logs/
 agent_context/
 EOF
@@ -128,9 +126,6 @@ EOF
     echo '.worktrees/' >> "$gitignore_file"
   fi
 
-  if ! grep -qx 'swarmtools/' "$gitignore_file"; then
-    echo 'swarmtools/' >> "$gitignore_file"
-  fi
 }
 
 ensure_runtime_git_excludes() {
@@ -140,7 +135,7 @@ ensure_runtime_git_excludes() {
   touch "$exclude_file"
 
   local pattern
-  for pattern in ".swarmforge/" ".worktrees/" "swarmtools/" "logs/" "agent_context/"; do
+  for pattern in ".swarmforge/" ".worktrees/" "logs/" "agent_context/"; do
     if ! grep -qx "$pattern" "$exclude_file"; then
       echo "$pattern" >> "$exclude_file"
     fi
@@ -304,7 +299,7 @@ write_sessions_file() {
 
 check_helper_scripts() {
   local helper
-  for helper in swarm-cleanup.sh swarm-window-watchdog.sh swarm-terminal-adapter.sh swarmlog.sh; do
+  for helper in notify-agent.sh swarm-cleanup.sh swarm-window-watchdog.sh swarm-terminal-adapter.sh swarmlog.sh; do
     if [[ ! -x "$SCRIPT_DIR/$helper" ]]; then
       echo -e "${RED}Error:${RESET} Required helper script not found or not executable: $SCRIPT_DIR/$helper"
       exit 1
@@ -319,125 +314,11 @@ check_helper_scripts() {
   done
 }
 
-write_notify_script() {
-  cat > "$SWARM_TOOLS_DIR/notify-agent.sh" <<'EOF'
-#!/usr/bin/env zsh
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-
-find_project_dir() {
-  local git_common_dir
-
-  if git_common_dir=$(git -C "$SCRIPT_DIR" rev-parse --git-common-dir 2>/dev/null); then
-    if [[ "$git_common_dir" != /* ]]; then
-      git_common_dir="$(cd "$SCRIPT_DIR/$git_common_dir" && pwd)"
-    fi
-    local project_dir="${git_common_dir:h}"
-    if [[ -f "$project_dir/.swarmforge/sessions.tsv" ]]; then
-      echo "$project_dir"
-      return 0
-    fi
-  fi
-
-  echo "${SCRIPT_DIR:h}"
-}
-
-PROJECT_DIR="$(find_project_dir)"
-SESSIONS_FILE="$PROJECT_DIR/.swarmforge/sessions.tsv"
-TMUX_SOCKET_FILE="$PROJECT_DIR/.swarmforge/tmux-socket"
-if [[ ! -f "$TMUX_SOCKET_FILE" ]]; then
-  echo "Tmux socket file not found: $TMUX_SOCKET_FILE" >&2
-  exit 1
-fi
-TMUX_SOCKET="$(< "$TMUX_SOCKET_FILE")"
-TMUX_WINDOW_BASE_INDEX="$(tmux -S "$TMUX_SOCKET" show-options -gqv base-index 2>/dev/null || echo 0)"
-if [[ ! "$TMUX_WINDOW_BASE_INDEX" == <-> ]]; then
-  TMUX_WINDOW_BASE_INDEX=0
-fi
-TMUX_PANE_BASE_INDEX="$(tmux -S "$TMUX_SOCKET" show-window-options -gqv pane-base-index 2>/dev/null || echo 0)"
-if [[ ! "$TMUX_PANE_BASE_INDEX" == <-> ]]; then
-  TMUX_PANE_BASE_INDEX=0
-fi
-
-if [[ $# -lt 2 ]]; then
-  echo "Usage: notify-agent.sh <target-role-or-index> \"message\"" >&2
-  echo "       notify-agent.sh <target-role-or-index> --file <message-file>" >&2
-  exit 1
-fi
-
-if [[ ! -f "$SESSIONS_FILE" ]]; then
-  echo "Sessions file not found: $SESSIONS_FILE" >&2
-  exit 1
-fi
-
-resolve_session() {
-  local target="${1:l}"
-  local index role session display agent
-
-  while IFS=$'\t' read -r index role session display agent; do
-    if [[ "$target" == "${index:l}" || "$target" == "${role:l}" ]]; then
-      echo "$session"
-      return 0
-    fi
-  done < "$SESSIONS_FILE"
-
-  return 1
-}
-
-TARGET_SESSION=$(resolve_session "$1") || {
-  echo "Unknown target: $1" >&2
-  exit 1
-}
-
-shift
-if [[ "${1:-}" == "--file" ]]; then
-  if [[ $# -ne 2 ]]; then
-    echo "Usage: notify-agent.sh <target-role-or-index> --file <message-file>" >&2
-    exit 1
-  fi
-  MESSAGE_FILE="$2"
-  if [[ ! -f "$MESSAGE_FILE" ]]; then
-    echo "Message file not found: $MESSAGE_FILE" >&2
-    exit 1
-  fi
-  MESSAGE="$(< "$MESSAGE_FILE")"
-else
-  MESSAGE="$*"
-fi
-
-tmux -S "$TMUX_SOCKET" send-keys -t "${TARGET_SESSION}:${TMUX_WINDOW_BASE_INDEX}.${TMUX_PANE_BASE_INDEX}" -l -- "$MESSAGE"
-sleep 0.15
-tmux -S "$TMUX_SOCKET" send-keys -t "${TARGET_SESSION}:${TMUX_WINDOW_BASE_INDEX}.${TMUX_PANE_BASE_INDEX}" C-m
-sleep 0.05
-tmux -S "$TMUX_SOCKET" send-keys -t "${TARGET_SESSION}:${TMUX_WINDOW_BASE_INDEX}.${TMUX_PANE_BASE_INDEX}" C-j
-EOF
-
-  chmod +x "$SWARM_TOOLS_DIR/notify-agent.sh"
-}
-
 prepare_workspace() {
-  mkdir -p "$WORKING_DIR/logs" "$WORKING_DIR/agent_context" "$STATE_DIR" "$PROMPTS_DIR" "$SWARM_TOOLS_DIR" "$WORKTREES_DIR" "$TMUX_SOCKET_DIR"
+  mkdir -p "$WORKING_DIR/logs" "$WORKING_DIR/agent_context" "$STATE_DIR" "$PROMPTS_DIR" "$WORKTREES_DIR" "$TMUX_SOCKET_DIR"
   printf '%s\n' "$TMUX_SOCKET" > "$TMUX_SOCKET_FILE"
   check_helper_scripts
   write_sessions_file
-  write_notify_script
-}
-
-write_worktree_notify_wrapper() {
-  local worktree_path="$1"
-  local wrapper_dir="$worktree_path/swarmtools"
-  local wrapper="$wrapper_dir/notify-agent.sh"
-  local canonical_notify="$SWARM_TOOLS_DIR/notify-agent.sh"
-
-  mkdir -p "$wrapper_dir"
-  {
-    echo '#!/usr/bin/env zsh'
-    echo 'set -euo pipefail'
-    printf 'CANONICAL_NOTIFY_AGENT=%q\n' "$canonical_notify"
-    echo 'exec "$CANONICAL_NOTIFY_AGENT" "$@"'
-  } > "$wrapper"
-  chmod +x "$wrapper"
 }
 
 prepare_worktrees() {
@@ -454,8 +335,6 @@ prepare_worktrees() {
     if [[ ! -e "$worktree_path/.git" && ! -d "$worktree_path/.git" ]]; then
       git -C "$WORKING_DIR" worktree add --force -B "$branch_name" "$worktree_path" HEAD >/dev/null
     fi
-
-    write_worktree_notify_wrapper "$worktree_path"
   done
 }
 
@@ -519,16 +398,16 @@ launch_role() {
 
   case "$agent" in
     claude)
-      launch_cmd="export PATH='$SWARM_TOOLS_DIR:$SCRIPT_DIR':\$PATH && cd '$role_worktree' && claude --append-system-prompt-file '$prompt_file' --permission-mode acceptEdits -n 'SwarmForge ${display}' \"\$(cat '$prompt_file')\""
+      launch_cmd="export PATH='$SCRIPT_DIR':\$PATH && cd '$role_worktree' && claude --append-system-prompt-file '$prompt_file' --permission-mode acceptEdits -n 'SwarmForge ${display}' \"\$(cat '$prompt_file')\""
       ;;
     codex)
-      launch_cmd="export PATH='$SWARM_TOOLS_DIR:$SCRIPT_DIR':\$PATH && cd '$role_worktree' && codex -C '$role_worktree' \"\$(cat '$prompt_file')\""
+      launch_cmd="export PATH='$SCRIPT_DIR':\$PATH && cd '$role_worktree' && codex -C '$role_worktree' \"\$(cat '$prompt_file')\""
       ;;
     copilot)
-      launch_cmd="export PATH='$SWARM_TOOLS_DIR:$SCRIPT_DIR':\$PATH && cd '$role_worktree' && copilot -C '$role_worktree' --name 'SwarmForge ${display}' -i \"\$(cat '$prompt_file')\""
+      launch_cmd="export PATH='$SCRIPT_DIR':\$PATH && cd '$role_worktree' && copilot -C '$role_worktree' --name 'SwarmForge ${display}' -i \"\$(cat '$prompt_file')\""
       ;;
     grok)
-      launch_cmd="export PATH='$SWARM_TOOLS_DIR:$SCRIPT_DIR':\$PATH && cd '$role_worktree' && grok --cwd '$role_worktree' --permission-mode acceptEdits --rules \"\$(cat '$prompt_file')\""
+      launch_cmd="export PATH='$SCRIPT_DIR':\$PATH && cd '$role_worktree' && grok --cwd '$role_worktree' --permission-mode acceptEdits --rules \"\$(cat '$prompt_file')\""
       ;;
   esac
 
@@ -601,7 +480,7 @@ for (( i = 1; i <= ${#ROLES[@]}; i++ )); do
   echo -e "  ${DISPLAY_NAMES[$i]}: ${SESSIONS[$i]}"
 done
 echo ""
-echo -e "${GREEN}Tip: Use $WORKING_DIR/swarmtools/notify-agent.sh <role-or-index> --file <message-file> while the swarm is running.${RESET}"
+echo -e "${GREEN}Tip: Use notify-agent.sh <role-or-index> --file <message-file> while the swarm is running.${RESET}"
 echo -e "${GREEN}Tip: Reattach manually with 'tmux -S $TMUX_SOCKET attach-session -t <session-name>' if needed.${RESET}"
 echo ""
 
