@@ -87,17 +87,7 @@ handoff_next_sequence() {
 }
 
 handoff_message_id() {
-  local type="$1"
-  local sender="$2"
-  local target="$3"
-  local sequence="$4"
-  printf '%s-%s-%s-%s-%s-%s' \
-    "$type" \
-    "$(handoff_id_timestamp)" \
-    "$sender" \
-    "$target" \
-    "$sequence" \
-    "$(handoff_random_hex)"
+  printf '%s-%s' "$(handoff_id_timestamp)" "$(handoff_random_hex)"
 }
 
 handoff_field() {
@@ -111,12 +101,9 @@ handoff_field() {
   printf '%s' "${line#*: }"
 }
 
-handoff_sequence_from_id() {
+handoff_valid_message_id() {
   local message_id="$1"
-  local sequence="${message_id%-*}"
-  sequence="${sequence##*-}"
-  if [[ "$sequence" == [0-9][0-9][0-9][0-9][0-9][0-9] ]]; then
-    echo "$sequence"
+  if [[ "$message_id" == [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] ]]; then
     return 0
   fi
   return 1

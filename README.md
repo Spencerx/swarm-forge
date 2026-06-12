@@ -163,13 +163,13 @@ notify-agent.sh send <target-role> --file ./tmp/<target-role>-handoff.txt
 
 ```text
 message type: handoff
-message id: handoff-YYYYMMDD-HHMMSS-sender-target-NNNNNN-XXXXXX
+message id: YYYYMMDD-HHMMSS-XXXXXX
 sender role: sender
 target role: target
 message sequence: NNNNNN
 ```
 
-Sequence numbers are per sender-target stream. For example, `coder-cleaner` has its own sequence, and `cleaner-coder` has a separate reverse sequence. The six-character suffix prevents id collisions when two messages are created in the same second.
+The `message id` timestamp is human-readable and roughly sortable. Message type, sender, target, and sequence are separate fields so the id does not duplicate protocol data. Sequence numbers are per sender-target stream. For example, `coder-cleaner` has its own sequence, and `cleaner-coder` has a separate reverse sequence. The six-character suffix prevents id collisions when two messages are created in the same second.
 
 The sender archives each outbound message under:
 
@@ -205,7 +205,7 @@ The resend request is itself a sequenced message in the reverse sender-target st
 
 ```text
 message type: resend-request
-message id: resend-request-YYYYMMDD-HHMMSS-sender-target-NNNNNN-XXXXXX
+message id: YYYYMMDD-HHMMSS-XXXXXX
 sender role: receiver
 target role: original-sender
 message sequence: NNNNNN

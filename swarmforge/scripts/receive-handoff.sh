@@ -63,8 +63,8 @@ if [[ "$TARGET" != "$RECEIVER" ]]; then
   exit 2
 fi
 
-if [[ "$SEQUENCE" != "$(handoff_sequence_from_id "$MESSAGE_ID")" ]]; then
-  echo "Message sequence does not match message id: $MESSAGE_ID" >&2
+if ! handoff_valid_message_id "$MESSAGE_ID"; then
+  echo "Invalid message id: $MESSAGE_ID" >&2
   exit 2
 fi
 
