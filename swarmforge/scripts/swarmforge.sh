@@ -277,7 +277,7 @@ write_sessions_file() {
 
 check_helper_scripts() {
   local helper
-  for helper in notify-agent.sh send-handoff.sh receive-handoff.sh resend-handoff.sh handoff-lib.sh swarm-cleanup.sh swarm-window-watchdog.sh swarm-terminal-adapter.sh; do
+  for helper in notify-agent.sh send-handoff.sh receive-handoff.sh resend-handoff.sh complete-handoff.sh handoff-lib.sh swarm-cleanup.sh swarm-window-watchdog.sh swarm-terminal-adapter.sh; do
     if [[ ! -x "$SCRIPT_DIR/$helper" ]]; then
       echo -e "${RED}Error:${RESET} Required helper script not found or not executable: $SCRIPT_DIR/$helper"
       exit 1
@@ -326,11 +326,14 @@ sync_worktree_scripts() {
 
     role_scripts_dir="$worktree_path/swarmforge/scripts"
     role_state_dir="$worktree_path/.swarmforge"
+    role_socket_dir="$role_state_dir/tmux"
+    role_socket="$role_socket_dir/${TMUX_SOCKET:t}"
     mkdir -p "$role_scripts_dir"
     cp -R "$SCRIPT_DIR/." "$role_scripts_dir/"
-    mkdir -p "$role_state_dir"
+    mkdir -p "$role_state_dir" "$role_socket_dir"
+    ln -sf "$TMUX_SOCKET" "$role_socket"
     cp "$SESSIONS_FILE" "$role_state_dir/sessions.tsv"
-    cp "$TMUX_SOCKET_FILE" "$role_state_dir/tmux-socket"
+    printf '%s\n' "$role_socket" > "$role_state_dir/tmux-socket"
   done
 }
 

@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 usage() {
   echo "Usage: notify-agent.sh send <target-role> --file <body-file> [--sender <sender-role>] [--priority NN]" >&2
   echo "       notify-agent.sh receive --file <message-file> [--receiver <receiver-role>]" >&2
+  echo "       notify-agent.sh complete --file <accepted-queue-file>" >&2
   echo "       notify-agent.sh <target-role-or-index> --file <message-file>" >&2
 }
 
@@ -22,6 +23,10 @@ if [[ $# -gt 0 ]]; then
     resend)
       shift
       exec "$SCRIPT_DIR/resend-handoff.sh" "$@"
+      ;;
+    complete)
+      shift
+      exec "$SCRIPT_DIR/complete-handoff.sh" "$@"
       ;;
   esac
 fi
