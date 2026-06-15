@@ -6,8 +6,11 @@
   - `awake`
   - `git_handoff`
   - `note`
-- Do not send `note` handoffs unless the user, role prompt, constitution, or
-  current task explicitly directs you to send one.
+- Do not send `note` handoffs unless the user, role prompt, or constitution
+  explicitly directs you to send one.
+- When blocked by ambiguity, contradiction, or test/specification conflict,
+  stop and ask for clarification; do not send a `note` handoff unless one of
+  the explicit authorities above directed that note.
 - For `awake`, write:
 
 ```text

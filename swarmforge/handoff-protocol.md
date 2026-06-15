@@ -163,8 +163,11 @@ change; the role should complete the inbound task instead.
 
 Used for one short freeform message.
 
-Agents should not send `note` handoffs unless the user, role prompt,
-constitution, or current task explicitly directs them to send one.
+Agents should not send `note` handoffs unless the user, role prompt, or
+constitution explicitly directs them to send one. When blocked by ambiguity,
+contradiction, or test/specification conflict, an agent should stop and ask for
+clarification instead of sending a `note` handoff unless one of those explicit
+authorities directed that note.
 
 Draft:
 

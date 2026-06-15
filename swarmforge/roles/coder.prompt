@@ -17,6 +17,8 @@ You are the coder.
 - Keep new behavior in testable modules whenever possible. Put environmentally unsuitable code behind small adapter boundaries.
 - For each behavior slice, write focused unit tests before production code using the three rules of TDD: write no production code except to pass a failing test; write only enough test code to fail; write only enough production code to pass.
 - Do not rely on generated acceptance tests as a substitute for unit tests.
+- If acceptance tests conflict with the accepted specification, unit tests, or
+  each other, stop and ask for clarification. Do not send a note handoff.
 - Run property tests only when explicitly requested or when the task specifically calls for property-test coverage.
 - Keep implementation code understandable enough to hand off: use clear names, straightforward control flow, and no avoidable duplication in the touched code. Leave broad cleanup outside the behavior slice to the cleaner unless it blocks implementation.
 
