@@ -152,193 +152,51 @@ In a runnable branch:
 4. Startup validates the configured role prompts, helper scripts, and terminal adapters.
 5. If the target directory is not already a git repository, startup initializes one and creates the first commit.
 6. Startup creates one git worktree per configured role under `.worktrees/`, unless the role is assigned to `master` or `none`.
-7. Startup syncs `swarmforge/scripts/` and missing shared constitution articles into each role worktree and puts that local scripts directory on each agent's `PATH`, so agents use `swarm-handoff` without reaching back into the master checkout.
+7. Startup syncs `swarmforge/scripts/` and missing shared constitution articles into each role worktree and puts that local scripts directory on each agent's `PATH`, so agents use local handoff helpers without reaching back into the master checkout.
 8. SwarmForge creates tmux sessions, opens terminal windows, and launches each configured backend in its assigned worktree.
-9. Roles communicate through sequenced handoff files. Agents write `.swarmforge/notify/request` and run `swarm-handoff`; the helper assigns message ids and sequence numbers, archives sent messages, records logbook entries, validates receive ordering, and requests resends when gaps are detected.
+9. Roles communicate through daemon-delivered handoff files. Agents create validated drafts with `swarm_handoff.sh`, accept tasks with `ready_for_next_task.sh`, and complete tasks with `done_with_current_task.sh`.
 
-## Handoff Helpers
+## Handoff Protocol
 
-Startup syncs the shared helper scripts into every role worktree under `swarmforge/scripts/` and puts that local directory on the agent's `PATH`. Agents should use the request-file form of `swarm-handoff` rather than running helper scripts from another worktree.
+Startup syncs the shared helper scripts into every role worktree under `swarmforge/scripts/` and puts that local directory on the agent's `PATH`. Agents do not send tmux messages directly. The launcher starts `handoffd.bb`, which owns tmux socket access, watches each agent outbox, copies validated handoff files into recipient inboxes, and sends only generic wake-up notifications.
 
-The agent-facing command is stable:
+Agents interact with handoffs through three helper scripts:
 
-```sh
-swarm-handoff
-```
+- `swarm_handoff.sh <draft-file>` validates and queues outbound handoffs.
+- `ready_for_next_task.sh` accepts the next available task and prints its sender, type, priority, and payload.
+- `done_with_current_task.sh` completes the current task and then delegates to `ready_for_next_task.sh`.
 
-Before running it, write `.swarmforge/notify/request` in the assigned worktree. To send a normal handoff:
-
-```text
-command: send
-target: <target-role>
-file: ./tmp/<target-role>-handoff.txt
-```
-
-Priority handoffs add a priority field:
+Outbound drafts use one of three message types. An awake message is a presence signal:
 
 ```text
-command: send
-target: <target-role>
-file: ./tmp/<target-role>-handoff.txt
-priority: 00
+type: awake
+to: <role>[,<role>...]
+priority: NN
 ```
 
-To receive a saved incoming message:
+A git handoff points the recipient at a committed state. The commit abbreviation must be exactly 10 hexadecimal characters; `swarm_handoff.sh` validates that it resolves to a single commit and canonicalizes it before queuing the handoff.
 
 ```text
-command: receive
-file: ./tmp/incoming-handoff.txt
+type: git_handoff
+to: <role>[,<role>...]
+priority: NN
+commit: <10-character-commit-abbrev>
 ```
 
-To complete an accepted queue file:
+A note is one short freeform message:
 
 ```text
-command: complete
-file: ./.swarmforge/handoffs/queue/accepted/<queue-file>.txt
+type: note
+to: <role>[,<role>...]
+priority: NN
+message: <one line, max 80 chars>
 ```
 
-The shared script directory also contains implementation helpers:
+The helper generates the delivered payload. Agents do not write long handoff bodies, branch names, queue filenames, or tmux commands.
 
-- `swarm-handoff` is the public entry point and low-level tmux transport.
-- `send-handoff.sh` builds sequenced protocol messages, archives outbound handoffs, sends them, and logs successful sends.
-- `receive-handoff.sh` normalizes incoming captures, validates protocol messages, records received or queued entries, queues accepted handoffs for role work, and generates resend requests when ordering gaps appear.
-- `resend-handoff.sh` replays archived outbound handoffs in response to resend requests.
-- `handoff-lib.sh` contains shared parsing, id generation, sequence, archive, and logbook functions.
+Recipient agents run `ready_for_next_task.sh` when notified or after restart. If it prints `NO_TASK`, they stop waiting for work. If it prints `TASK: <path>`, they treat the printed `PAYLOAD` as the task. If a wake-up arrives while an agent is already working, it can ignore the wake-up; `done_with_current_task.sh` checks for the next task after completing the current one.
 
-Agents normally call only `swarm-handoff` with no arguments after writing `.swarmforge/notify/request`. The explicit subcommands and other scripts are kept separate so the transport, sequencing, receive validation, and replay behavior are easy to inspect, test, and use manually when needed.
-
-## Avoiding Escalation During Handoffs
-
-Handoff commands must stay inside the agent's sandbox as much as possible. The two recurring escalation triggers are direct access to the tmux socket and direct deletion of accepted queue files.
-
-When an agent sends, receives, or completes a handoff, it should write `.swarmforge/notify/request` and run:
-
-```sh
-swarm-handoff
-```
-
-This stable command shape is intentional. Some command approval systems approve future commands by their literal command prefix. If every handoff uses a different command line, each target, file path, priority, or queue filename can create a new approval prompt. The request file moves those variable arguments into local project state, so a single approval for `swarm-handoff` covers normal handoff send, receive, resend, and completion operations.
-
-If `swarm-handoff` requires escalation, the agent should request reusable approval for the exact command prefix `["swarm-handoff"]`. Do not use `SWARMFORGE_ROLE=<role> swarm-handoff`, `./swarm-handoff`, an absolute path, `zsh -c swarm-handoff`, redirection, or a wrapper command for normal handoffs; those forms can prevent the approval UI from offering a reusable prefix for the stable handoff command.
-
-`swarm-handoff` is the executable command, not a request file. Never write, redirect, append, or pipe handoff content to `swarm-handoff` or `./swarm-handoff`; commands like `printf ... > ./swarm-handoff` can replace the helper script. Agents write request content only to `.swarmforge/notify/request` and message content only to `./tmp/<target-role>-handoff.txt` or the explicit incoming-message file named in the receive procedure.
-
-Do not have agents run `tmux -S <socket> ...` directly. The `swarm-handoff` transport detects when it is already running inside a tmux pane and uses the inherited tmux client context:
-
-```sh
-tmux send-keys -t "$TARGET_SESSION" ...
-```
-
-That avoids naming or opening the tmux socket from the agent process. Some agent command runners sanitize the environment and remove `TMUX` even though the agent itself was launched inside tmux. To handle that, `swarmforge.sh` writes the active tmux client value to `.swarmforge/tmux-env` after creating the swarm sessions and syncs that file into each role worktree. If `swarm-handoff` starts without `TMUX`, it restores `TMUX` from `.swarmforge/tmux-env` and still uses plain `tmux send-keys`.
-
-The explicit `tmux -S <socket>` path is kept only as a fallback for manual helper use outside tmux.
-
-Do not ask agents to remove queue files with `rm`, `rm -f`, or ad hoc cleanup commands. The completion helper moves the accepted queue file to `.swarmforge/handoffs/queue/completed/`, which keeps cleanup predictable and avoids destructive-command escalation.
-
-The operational rule is simple: agents write `.swarmforge/notify/request`, run `swarm-handoff`, do not call `tmux` directly, and do not delete queue files directly.
-
-## Communication Protocol
-
-Agents communicate by file-based messages sent through tmux. A sender writes only the role-specific handoff body, then writes `.swarmforge/notify/request`:
-
-```text
-command: send
-target: <target-role>
-file: ./tmp/<target-role>-handoff.txt
-```
-
-Then it runs `swarm-handoff`. Priority handoffs add `priority: NN` to the request file; normal handoffs default to priority `50`.
-
-The send helper wraps that body with protocol fields:
-
-```text
-message type: handoff
-message id: YYYYMMDD-HHMMSS-XXXXXX
-sender role: sender
-target role: target
-message sequence: NNNNNN
-message priority: 50
-branch name: sender-branch
-commit hash: 1234567890
-```
-
-The `message id` timestamp is human-readable and roughly sortable. Message type, sender, target, and sequence are separate fields so the id does not duplicate protocol data. Sequence numbers are per sender-target stream. For example, `coder-cleaner` has its own sequence, and `cleaner-coder` has a separate reverse sequence. The six-character suffix prevents id collisions when two messages are created in the same second.
-
-The helper reads `branch name` and the 10-character `commit hash` from the sender's current git worktree at send time. Agents should commit the state being handed off, send the handoff immediately, and avoid making another commit until `swarm-handoff` completes successfully. The generated branch and commit fields are the authoritative state for the receiver to merge.
-
-The sender archives each outbound message under:
-
-```text
-.swarmforge/handoffs/sent/<sender-target>/<sequence>.txt
-```
-
-After the low-level tmux send succeeds, the sender appends a `sent` entry to `.swarmforge/logbook.jsonl`. If the tmux notification fails, the message remains archived for possible manual recovery, but no `sent` logbook entry is written.
-
-When an agent receives a message, it saves the complete incoming text to a file and runs:
-
-```text
-command: receive
-file: ./tmp/incoming-handoff.txt
-```
-
-Then it runs `swarm-handoff`.
-
-The receive helper ignores any leading terminal noise before the first valid `message type: handoff` or `message type: resend-request` header. It archives and queues only the normalized protocol message, not the noisy capture.
-
-The receive helper checks `message type`, `message id`, sender, target, sequence, and priority. If a handoff is valid and in order, it archives the message, appends a `received` entry to `.swarmforge/logbook.jsonl`, updates the last processed sequence for that sender-target stream, copies the handoff into the accepted queue, and prints the queued file path:
-
-```text
-.swarmforge/handoffs/queue/accepted/<priority>-<timestamp>-<sender-target>-<sequence>.txt
-```
-
-Agents process only accepted queue files and do not rerun `swarm-handoff receive` on them. After the corresponding role work is complete, agents complete accepted queue files with:
-
-```text
-command: complete
-file: ./.swarmforge/handoffs/queue/accepted/<queue-file>.txt
-```
-
-Then they run `swarm-handoff`. The completion helper moves the queue file into `.swarmforge/handoffs/queue/completed/`.
-
-`swarm-handoff` also keeps explicit command forms for manual helper implementation and diagnostics:
-
-```sh
-swarm-handoff send <target-role> --file ./tmp/<target-role>-handoff.txt
-swarm-handoff receive --file ./tmp/incoming-handoff.txt
-swarm-handoff complete --file ./.swarmforge/handoffs/queue/accepted/<queue-file>.txt
-swarm-handoff <target-role-or-index> --file <message-file>
-```
-
-Agents should not use the low-level target/file transport form for normal handoffs because it bypasses sequencing, archiving, resend recovery, and logbook handling. Agents should prefer the no-argument request-file form over explicit subcommands to keep command approvals stable.
-
-Handoff logbooks are runtime state under `.swarmforge/logbook.jsonl`. Agents should not edit, merge, stage, or commit them. Use the handoff archives and generated logbook for local diagnostics only.
-
-## Recovery Strategy
-
-The protocol is designed for eventual correction rather than tmux-pane sniffing.
-
-If `swarm-handoff receive` sees the next expected handoff sequence, it queues the handoff for role work. If it sees a sequence gap, it archives the out-of-order message, appends a queued logbook entry, sends a `resend-request` back to the sender, and prints `DO NOT PROCESS`.
-
-The resend request is itself a sequenced message in the reverse sender-target stream:
-
-```text
-message type: resend-request
-message id: YYYYMMDD-HHMMSS-XXXXXX
-sender role: receiver
-target role: original-sender
-message sequence: NNNNNN
-message priority: 50
-branch name: receiver-branch
-commit hash: 1234567890
-resend stream: original-sender-receiver
-resend sequences: 000003-000005
-```
-
-The missing range includes the out-of-order message that exposed the gap. That keeps recovery simple: the original sender replays one contiguous range, and the receiver processes messages only when they arrive in sequence.
-
-When a sender receives a `resend-request`, `swarm-handoff receive` calls `resend-handoff.sh`, which reads archived messages from `.swarmforge/handoffs/sent/` and resends each requested sequence. Resent messages are logged as sent only after the low-level notification succeeds.
-
-Duplicate or stale messages are archived and logged as queued, but the helper prints `DO NOT PROCESS`. Agents should not merge, apply, or otherwise act on a handoff unless it appears in the accepted queue.
+The durable handoff files and lifecycle headers replace the old logbook and resend queue. Runtime handoff state lives under `.swarmforge/handoffs/` in each worktree, with `outbox`, `sent`, `failed`, and `inbox` subdirectories. Agents should not hand-edit, merge, stage, or commit handoff runtime state. See [swarmforge/handoff-protocol.md](swarmforge/handoff-protocol.md) for the full protocol.
 
 ## The `swarmforge.conf` File
 
