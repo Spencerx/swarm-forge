@@ -126,6 +126,29 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarmforge-terminal-bridge-preserves-adapter-globals
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root "swarmforge/scripts/swarm-terminal-adapter.sh")
+                  (str "load_terminal_backend() {\n"
+                       "  source \"$SCRIPT_DIR/terminal-adapters/$1.sh\"\n"
+                       "}\n"))
+      (write-file (fs/path root "swarmforge/scripts/terminal-adapters/probe.sh")
+                  (str "terminal_open_session() {\n"
+                       "  printf '%s\\n' \"$WORKING_DIR|$TMUX_SOCKET|$1|$2|$3\"\n"
+                       "}\n"))
+      (let [result (run {:dir root}
+                        (script "swarmforge.bb")
+                        "--test-terminal-bridge"
+                        (str root)
+                        "probe")]
+        (is (str/includes? (:out result) (str root "|")))
+        (is (str/includes? (:out result) "|swarmforge-specifier|SwarmForge Specifier|"))
+        (is (not (str/includes? (:out result) "cd ''")))
+        (is (not (str/includes? (:out result) "-S ''"))))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest window-watchdog-rewrites-window-state-and-id-list
   (let [root (tmp-dir)
         state-file (fs/path root "windows.tsv")

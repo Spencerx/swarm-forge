@@ -349,10 +349,10 @@
   (println (str green "Started handoff daemon." reset)))
 
 (defn adapter-script [ctx command & args]
-  (let [script (str "SCRIPT_DIR=" (sq (str (:script-dir ctx)))
-                    " WORKING_DIR=" (sq (str (:working-dir ctx)))
-                    " TMUX_SOCKET=" (sq (:tmux-socket ctx))
-                    " source " (sq (str (fs/path (:script-dir ctx) "swarm-terminal-adapter.sh")))
+  (let [script (str "SCRIPT_DIR=" (sq (str (:script-dir ctx))) "\n"
+                    "WORKING_DIR=" (sq (str (:working-dir ctx))) "\n"
+                    "TMUX_SOCKET=" (sq (:tmux-socket ctx)) "\n"
+                    "source " (sq (str (fs/path (:script-dir ctx) "swarm-terminal-adapter.sh")))
                     " && load_terminal_backend " (sq (:terminal-backend ctx))
                     " && " command
                     (apply str (map #(str " " (sq %)) args)))]
@@ -494,9 +494,16 @@
         (println)
         (open-terminal-surfaces! ctx)))))
 
+(defn test-terminal-bridge! [root backend]
+  (let [local-script-dir (fs/path root "swarmforge" "scripts")
+        ctx (cond-> (assoc (context root) :terminal-backend backend)
+              (fs/exists? local-script-dir) (assoc :script-dir local-script-dir))]
+    (println (terminal-call-out ctx "terminal_open_session" "swarmforge-specifier" "SwarmForge Specifier" ""))))
+
 (defn -main [& args]
-  (if (= "--test-parse" (first args))
-    (test-parse! (or (second args) (System/getProperty "user.dir")))
+  (case (first args)
+    "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
+    "--test-terminal-bridge" (test-terminal-bridge! (or (second args) (System/getProperty "user.dir")) (nth args 2))
     (run-main! (or (first args) (System/getProperty "user.dir")))))
 
 (apply -main *command-line-args*)
