@@ -26,6 +26,13 @@
 (defn command-exists? [command]
   (sh-ok? "sh" "-c" (str "command -v " command " >/dev/null 2>&1")))
 
+(defn env-long [name default-value]
+  (if-let [value (System/getenv name)]
+    (if (re-matches #"[0-9]+" value)
+      (Long/parseLong value)
+      default-value)
+    default-value))
+
 (defn fail! [message]
   (binding [*out* *err*]
     (println message))
@@ -480,8 +487,11 @@
         (sync-worktree-scripts! ctx)
         (start-handoff-daemon! ctx)
         (println (str green "Starting agents..." reset))
-        (doseq [[index row] (map-indexed vector (:roles ctx))]
-          (launch-role! ctx index row))
+        (let [delay-ms (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500)]
+          (doseq [[index row] (map-indexed vector (:roles ctx))]
+            (when (pos? index)
+              (Thread/sleep delay-ms))
+            (launch-role! ctx index row)))
         (println)
         (println (str green bold "SwarmForge is ready." reset))
         (println "Working directory:" (str (:working-dir ctx)))
@@ -504,6 +514,7 @@
   (case (first args)
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
     "--test-terminal-bridge" (test-terminal-bridge! (or (second args) (System/getProperty "user.dir")) (nth args 2))
+    "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     (run-main! (or (first args) (System/getProperty "user.dir")))))
 
 (apply -main *command-line-args*)

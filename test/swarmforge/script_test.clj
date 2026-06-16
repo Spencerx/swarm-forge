@@ -149,6 +149,22 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarmforge-agent-start-delay-is-configurable
+  (let [default-result (run {:dir repo-root}
+                            (script "swarmforge.bb")
+                            "--test-agent-start-delay")
+        configured-result (run {:dir repo-root
+                                :env {"SWARMFORGE_AGENT_START_DELAY_MS" "2750"}}
+                               (script "swarmforge.bb")
+                               "--test-agent-start-delay")
+        invalid-result (run {:dir repo-root
+                             :env {"SWARMFORGE_AGENT_START_DELAY_MS" "fast"}}
+                            (script "swarmforge.bb")
+                            "--test-agent-start-delay")]
+    (is (= "1500" (str/trim (:out default-result))))
+    (is (= "2750" (str/trim (:out configured-result))))
+    (is (= "1500" (str/trim (:out invalid-result))))))
+
 (deftest window-watchdog-rewrites-window-state-and-id-list
   (let [root (tmp-dir)
         state-file (fs/path root "windows.tsv")

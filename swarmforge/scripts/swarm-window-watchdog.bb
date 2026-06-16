@@ -35,10 +35,10 @@
                      (rows window-state-file))))
 
 (defn adapter-script [script-dir working-dir tmux-socket backend command & args]
-  (let [script (str "SCRIPT_DIR=" (sq (str script-dir))
-                    " WORKING_DIR=" (sq (str working-dir))
-                    " TMUX_SOCKET=" (sq tmux-socket)
-                    " source " (sq (str (fs/path script-dir "swarm-terminal-adapter.sh")))
+  (let [script (str "SCRIPT_DIR=" (sq (str script-dir)) "\n"
+                    "WORKING_DIR=" (sq (str working-dir)) "\n"
+                    "TMUX_SOCKET=" (sq tmux-socket) "\n"
+                    "source " (sq (str (fs/path script-dir "swarm-terminal-adapter.sh")))
                     " && load_terminal_backend " (sq backend)
                     " && " command
                     (apply str (map #(str " " (sq %)) args)))]
