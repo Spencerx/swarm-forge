@@ -165,8 +165,13 @@
 (defn stop-tmux! [sock]
   (run {:dir "." :ok? false} "tmux" "-S" sock "kill-server"))
 
-(defn handoffd-once [root]
-  (run {:dir root} "bb" (script "handoffd.bb") "--once" (str root)))
+(defn handoffd-once
+  ([root] (handoffd-once root nil))
+  ([root env]
+   (run {:dir root :env env} "bb" (script "handoffd.bb") "--once" (str root))))
+
+(defn pane-path [root role task]
+  (fs/path root ".swarmforge/sessions" role task "pane.txt"))
 
 (deftest pack-board-creates-a-task-in-the-master-lane
   ;; Given a pack with specifier on master
@@ -608,6 +613,59 @@
     (let [result (pack-web root false "--test-pane" (str root) "coder")]
       (is (zero? (:exit result)))
       (is (str/includes? (:out result) "coder pane snapshot")))))
+
+(deftest handoffd-archives-sender-pane-when-task-moves
+  ;; Given card and specifier→coder handoff (two-pack coder→cleaner to skip attention)
+  ;; When delivered
+  ;; Then .swarmforge/sessions/<from>/<task>/pane.txt exists
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "htw-console-app" "coder")
+                 (queue-handoff! root {:from "coder" :to "cleaner" :task "htw-console-app"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root {"SWARMFORGE_PANE_STUB" "pane\n"})
+      (let [pane (pane-path root "coder" "htw-console-app")]
+        (is (fs/exists? pane))
+        (is (= "pane\n" (slurp (str pane)))))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest pack-board-archives-live-role-panes
+  ;; Given a two-pack with a live card in coder and a done card
+  ;; When pack_board archive-all with SWARMFORGE_PANE_STUB
+  ;; Then coder's pane.txt exists and the done card is skipped
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]]
+    (setup-pack! root roles)
+    (create-task root "htw-console-app" "coder")
+    (create-task root "already-done" "done")
+    (let [result (run {:dir root :env {"SWARMFORGE_PANE_STUB" "pane\n"}}
+                      (script "pack_board.sh")
+                      "archive-all" "--root" (str root))]
+      (is (zero? (:exit result)))
+      (is (= "pane\n" (slurp (str (pane-path root "coder" "htw-console-app")))))
+      (is (not (fs/exists? (pane-path root "done" "already-done")))))))
+
+(deftest close-swarm-archives-live-role-panes
+  ;; Given a two-pack with a live card in coder
+  ;; When close-swarm
+  ;; Then coder's pane.txt is archived
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]]
+    (setup-pack! root roles)
+    (create-task root "htw-console-app" "coder")
+    (write-file (fs/path root ".swarmforge/tmux-socket")
+                (str (fs/path root "tmux.sock") "\n"))
+    (write-file (fs/path root ".swarmforge/window-ids") "")
+    (let [result (run {:dir root
+                       :env {"SWARMFORGE_TERMINAL_BACKEND" "none"
+                             "SWARMFORGE_PANE_STUB" "pane\n"}}
+                      (str (fs/path repo-root "close-swarm"))
+                      (str root))]
+      (is (zero? (:exit result)))
+      (is (= "pane\n" (slurp (str (pane-path root "coder" "htw-console-app"))))))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]

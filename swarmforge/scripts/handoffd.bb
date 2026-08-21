@@ -145,6 +145,14 @@
         (pack-board! "done" "--name" task)
         (pack-board! "move" "--name" task "--lane" (first recipients))))))
 
+(defn archive-sender! [headers]
+  (let [from (get headers "from")
+        task (get headers "task")]
+    (when (and (= "git_handoff" (get headers "type"))
+               (not (str/blank? from))
+               (not (str/blank? task)))
+      (pack-board! "archive" "--role" from "--name" task))))
+
 (defn master-role-name [roles]
   (some (fn [[role info]]
           (when (= "master" (:worktree-name info))
@@ -200,6 +208,7 @@
                              (fs/path (get-in roles [sender-role :worktree-path])
                                       ".swarmforge" "handoffs" "sent"))
         (update-board! headers)
+        (archive-sender! headers)
         (log! "delivered" (str path))))))
 
 (defn outbox-files [role-info]
