@@ -85,7 +85,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
     <span class="spacer"></span>
     <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
     <button class="btn" type="button" id="btn-open-master">Open</button>
-    <button class="btn btn-danger" type="button">Teardown</button>
+    <button class="btn btn-danger" type="button" id="teardown-btn">Teardown</button>
   </header>
 
   <div class="attention" id="attention">
@@ -368,10 +368,33 @@ async function sendChat() {
   $("chat-input").value = "";
 }
 
+async function teardownSwarm() {
+  if (!confirm("Stop this swarm? Agent sessions and tmux windows will be terminated. Project files stay on disk.")) return;
+  const btn = $("teardown-btn");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Tearing down…";
+  }
+  try {
+    await fetch("/api/teardown", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({confirm: "TEARDOWN"})
+    });
+    $("pack-meta").textContent = "Swarm teardown started — this page will go offline.";
+  } catch (_) {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Teardown";
+    }
+  }
+}
+
 $("btn-new-task").onclick = () => $("new-task-layer").classList.add("open");
 $("nt-cancel").onclick = closeNewTask;
 $("nt-ok").onclick = submitNewTask;
 $("doc-close").onclick = () => $("doc-layer").classList.remove("open");
+$("teardown-btn").onclick = teardownSwarm;
 $("chat-input").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();

@@ -20,13 +20,16 @@
        "  pack_web.sh --test-inject-argv <root> <file> <text>\n"
        "  pack_web.sh --test-approve <root> <id>\n"
        "  pack_web.sh --test-reject <root> <id>\n"
-       "  pack_web.sh --test-pane <root> <role>"))
+       "  pack_web.sh --test-pane <root> <role>\n"
+       "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
 (def example-task-name "htw-console-app")
 (def example-task-text
   "Integrate the stories in ~/junk/htw-stories into one console application.")
 
 (def ^:dynamic *tmux-stub* nil)
+(def ^:dynamic *sync-teardown?* false)
+(def teardown-delay-ms 250)
 
 (defn usage []
   (binding [*out* *err*]
@@ -437,10 +440,105 @@
 
     :else {:status 404 :body "Not found"}))
 
+(defn confirm-teardown? [body]
+  (let [text (str/trim (or body ""))]
+    (or (= "TEARDOWN" text)
+        (try
+          (= "TEARDOWN" (:confirm (json/parse-string text true)))
+          (catch Exception _ false)))))
+
+(defn current-pid []
+  (str (.pid (java.lang.ProcessHandle/current))))
+
+(defn pack-web-pid-file [root]
+  (fs/path root ".swarmforge" "pack_web.pid"))
+
+(defn write-pack-web-pid! [root]
+  (let [file (pack-web-pid-file root)]
+    (fs/create-dirs (fs/parent file))
+    (spit (str file) (str (current-pid) "\n"))))
+
+(defn stop-pack-web! [root]
+  (let [file (pack-web-pid-file root)
+        pid (when (fs/exists? file)
+              (not-empty (str/trim (slurp (str file)))))]
+    (when (and pid (not= pid (current-pid)))
+      (sh "kill" "-TERM" pid))
+    (fs/delete-if-exists file)))
+
+(defn list-tmux-sessions [socket]
+  (if (str/blank? socket)
+    []
+    (let [result (sh "tmux" "-S" socket "list-sessions" "-F" "#{session_name}")]
+      (if (zero? (:exit result))
+        (->> (str/split-lines (:out result))
+             (remove str/blank?)
+             vec)
+        []))))
+
+(defn kill-session! [socket session]
+  (sh "tmux" "-S" socket "kill-session" "-t" (str "=" session))
+  (sh "tmux" "-S" socket "kill-session" "-t" session))
+
+(defn kill-all-sessions-on-socket! [socket]
+  (when-not (str/blank? socket)
+    (doseq [session (list-tmux-sessions socket)]
+      (kill-session! socket session))
+    (sh "tmux" "-S" socket "kill-server")))
+
+(defn stop-handoffd! [root]
+  (sh "bb" (str (fs/path script-dir "stop_handoff_daemon.bb")) (str root)))
+
+(defn swarm-cleanup! [root socket]
+  (let [script (str (fs/path script-dir "swarm-cleanup.sh"))
+        ids (str (fs/path root ".swarmforge" "window-ids"))]
+    (apply sh (into [script (or socket "none") ids]
+                    (list-tmux-sessions socket)))))
+
+(defn close-swarm-bin []
+  (let [path (fs/path (fs/parent (fs/parent script-dir)) "close-swarm")]
+    (when (fs/exists? path)
+      (str path))))
+
+(defn close-swarm! [root]
+  (if-let [bin (close-swarm-bin)]
+    (sh bin (str root))
+    (swarm-cleanup! root (tmux-socket root))))
+
+(defn run-teardown! [root]
+  (close-swarm! root)
+  (stop-handoffd! root)
+  (kill-all-sessions-on-socket! (tmux-socket root))
+  (stop-pack-web! root)
+  true)
+
+(defn schedule-teardown! [root]
+  (if *sync-teardown?*
+    (run-teardown! root)
+    (future
+      (Thread/sleep teardown-delay-ms)
+      (try
+        (run-teardown! root)
+        (catch Exception _))
+      (System/exit 0)))
+  true)
+
+(defn teardown-response [root body]
+  (if (confirm-teardown? body)
+    (do
+      (schedule-teardown! root)
+      {:status 200
+       :headers {"Content-Type" "application/json"}
+       :body (json/generate-string {:ok true :status "teardown_started"})})
+    {:status 400
+     :headers {"Content-Type" "text/plain; charset=utf-8"}
+     :body "Teardown requires confirm=TEARDOWN (JSON {\"confirm\":\"TEARDOWN\"}).\n"}))
+
 (defn handle-post [root uri body]
   (cond
     (= "/api/tasks" uri) (post-tasks root body)
     (= "/api/chat" uri) (post-chat root body)
+    (= "/api/teardown" uri) (teardown-response root body)
     (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri)
     :else {:status 404 :body "Not found"}))
 
@@ -493,6 +591,18 @@
   (print (pane-content (require-root! root) role))
   (flush))
 
+(defn test-teardown! [root confirm]
+  (binding [*sync-teardown?* true]
+    (let [resp (handle-request (require-root! root)
+                               {:method "POST"
+                                :uri "/api/teardown"
+                                :body (when confirm
+                                        (json/generate-string {:confirm confirm}))})]
+      (when-not (= 200 (:status resp))
+        (exit! 2 (:body resp)))
+      (print (:body resp))
+      (flush))))
+
 (defn request-body [req]
   (when-let [body (:body req)]
     (if (string? body) body (slurp body))))
@@ -524,6 +634,7 @@
                                  :legacy-return-value? false})
         url (str "http://127.0.0.1:" (http/server-port server))]
     (write-dashboard-url! root url)
+    (write-pack-web-pid! root)
     (println url)
     (flush)
     @(promise)))
@@ -540,6 +651,7 @@
     "--test-approve" (test-approval! (second args) (nth args 2 nil) "approve")
     "--test-reject" (test-approval! (second args) (nth args 2 nil) "reject")
     "--test-pane" (test-pane! (second args) (nth args 2 nil))
+    "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))
   (System/exit 0))

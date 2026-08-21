@@ -698,6 +698,46 @@
         (.destroyForcibly proc)
         (.waitFor proc)))))
 
+(deftest pack-dashboard-html-wires-teardown
+  ;; When serving dashboard.html
+  ;; Then Teardown posts /api/teardown after confirm
+  (let [html (dashboard-html (tmp-dir))]
+    (is (re-find #"id=\"teardown-btn\"" html))
+    (is (str/includes? html "/api/teardown"))
+    (is (str/includes? html "TEARDOWN"))
+    (is (str/includes? html "teardownSwarm"))))
+
+(deftest pack-web-teardown-requires-confirm
+  ;; Given a pack root
+  ;; When POST /api/teardown without confirm
+  ;; Then it is rejected
+  (let [root (tmp-dir)
+        result (pack-web root false "--test-teardown" (str root))]
+    (is (= 2 (:exit result)))
+    (is (str/includes? (str (:err result) (:out result)) "TEARDOWN"))))
+
+(deftest pack-web-teardown-kills-sessions-and-handoffd
+  ;; Given a live tmux session and a fake handoffd pid
+  ;; When teardown is confirmed
+  ;; Then the tmux server is dead and the daemon pid is gone
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["coder" "cleaner"])
+        sock (start-tmux! root ["coder" "cleaner"])
+        daemon (.start (java.lang.ProcessBuilder. ["sleep" "120"]))
+        pid (str (.pid daemon))]
+    (try
+      (write-file (fs/path root ".swarmforge/daemon/handoffd.pid") (str pid "\n"))
+      (let [result (pack-web root false "--test-teardown" (str root) "TEARDOWN")]
+        (is (zero? (:exit result)))
+        (is (str/includes? (:out result) "teardown_started"))
+        (is (not= 0 (:exit (run {:dir root :ok? false} "tmux" "-S" sock "list-sessions"))))
+        (is (false? (.isAlive daemon)))
+        (is (not (fs/exists? (fs/path root ".swarmforge/daemon/handoffd.pid")))))
+      (finally
+        (when (.isAlive daemon)
+          (.destroyForcibly daemon))
+        (stop-tmux! sock)))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
     (System/exit (+ fail error))))
