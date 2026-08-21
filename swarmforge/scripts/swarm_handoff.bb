@@ -13,8 +13,9 @@
        "type: git_handoff\n"
        "to: <role>[,<role>...]\n"
        "priority: NN\n"
-       "task: <short-stable-task-name>\n"
-       "commit: <10-char-commit-abbrev>\n\n"
+       "task: <short-stable-task-name>\n\n"
+       "The helper fills commit and artifacts from the sender worktree HEAD.\n"
+       "Do not type a SHA. Extra headers (coverage, CRAP) are invalid.\n\n"
        "type: note\n"
        "to: <role>[,<role>...]\n"
        "priority: NN\n"
@@ -72,10 +73,26 @@
           (= role (first (str/split line #"\t"))))
         (str/split-lines (slurp (str (roles-file))))))
 
+(defn same-path? [a b]
+  (try
+    (= (str (fs/canonicalize a)) (str (fs/canonicalize b)))
+    (catch Exception _
+      (= (str a) (str b)))))
+
+(defn infer-role-from-worktree []
+  (let [here (or (git-root) (str (fs/absolutize ".")))]
+    (some (fn [line]
+            (let [cols (str/split line #"\t")
+                  role (first cols)
+                  wt (when (>= (count cols) 3) (nth cols 2))]
+              (when (and (not-empty role) (not-empty wt) (same-path? wt here))
+                role)))
+          (str/split-lines (slurp (str (roles-file)))))))
+
 (defn sender-role []
-  (if-let [role (not-empty (System/getenv "SWARMFORGE_ROLE"))]
-    role
-    (exit! 1 "Set SWARMFORGE_ROLE.")))
+  (or (not-empty (System/getenv "SWARMFORGE_ROLE"))
+      (infer-role-from-worktree)
+      (exit! 1 "Set SWARMFORGE_ROLE.")))
 
 (defn role-worktree [role]
   (some (fn [line]
@@ -88,6 +105,22 @@
   (or (not-empty (role-worktree (sender-role)))
       (git-root)
       "."))
+
+(defn worktree-head []
+  (let [result (command (git-cwd) "git" "rev-parse" "--short=10" "HEAD")]
+    (when-not (zero? (:exit result))
+      (exit! 1 "Cannot read HEAD commit."))
+    (str/trim (:out result))))
+
+(defn commit-on-sender-branch? [sha]
+  (zero? (:exit (command (git-cwd) "git" "merge-base" "--is-ancestor" sha "HEAD"))))
+
+(defn commit-artifacts [sha]
+  (->> (command (git-cwd) "git" "diff-tree" "--root" "--no-commit-id" "--name-only" "-r" sha)
+       :out
+       str/split-lines
+       (remove str/blank?)
+       vec))
 
 (defn state-dir []
   (fs/path (project-root) ".swarmforge" "handoffs"))
@@ -282,7 +315,7 @@
     "git_handoff" (str "Re-read your role and constitution.\n\nmerge_and_process " sender " " canonical-commit)
     "note" (str "Re-read your role and constitution.\n\n" note-message)))
 
-(defn write-handoff! [{:keys [headers recipients canonical-commit sender]}]
+(defn write-handoff! [{:keys [headers recipients canonical-commit artifacts sender]}]
   (let [timestamp-id (id-timestamp)
         created-at (timestamp)
         sequence (next-sequence)
@@ -304,7 +337,8 @@
                 (= "git_handoff" type)
                 (conj (str "role: " sender)
                       (str "task: " (get headers "task"))
-                      (str "commit: " canonical-commit))
+                      (str "commit: " canonical-commit)
+                      (str "artifacts: " artifacts))
                 (= "note" type)
                 (conj (str "message: " (get headers "message")))
                 true
@@ -344,16 +378,32 @@
       (when-not (role-known? sender)
         (exit! 1 (str "Unknown sender role: " sender)))
       (let [{:keys [headers ordered errors]} (parse-draft draft)
-            validation (validate headers ordered)
-            all-errors (vec (concat errors (:errors validation)))]
-        (when (seq all-errors)
-          (error-report draft all-errors)
-          (System/exit 2))
-        (let [outbox-file (write-handoff! {:headers headers
-                                           :recipients (:recipients validation)
-                                           :canonical-commit (:canonical-commit validation)
-                                           :sender sender})]
-          (fs/delete draft)
-          (println "HANDOFF QUEUED:" (str outbox-file)))))))
+            headers (cond-> headers
+                      (= "git_handoff" (get headers "type"))
+                      (assoc "commit" (worktree-head)))
+            ordered (if (and (= "git_handoff" (get headers "type"))
+                             (not (some #{"commit"} ordered)))
+                      (conj (vec ordered) "commit")
+                      ordered)
+            sha (get headers "commit")]
+        (when (and (= "git_handoff" (get headers "type"))
+                   (not (commit-on-sender-branch? sha)))
+          (exit! 1 (str "Result commit " sha " is not reachable from sender worktree")))
+        (let [validation (validate headers ordered)
+              all-errors (vec (concat errors (:errors validation)))]
+          (when (seq all-errors)
+            (error-report draft all-errors)
+            (System/exit 2))
+          (let [files (when (= "git_handoff" (get headers "type"))
+                        (commit-artifacts sha))]
+            (when (and (= "git_handoff" (get headers "type")) (empty? files))
+              (exit! 1 (str "Result commit " sha " has no changed files")))
+            (let [outbox-file (write-handoff! {:headers headers
+                                               :recipients (:recipients validation)
+                                               :canonical-commit (:canonical-commit validation)
+                                               :artifacts (when files (str/join "," files))
+                                               :sender sender})]
+              (fs/delete draft)
+              (println "HANDOFF QUEUED:" (str outbox-file)))))))))
 
 (apply -main *command-line-args*)

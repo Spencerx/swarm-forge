@@ -216,6 +216,7 @@
 
 (def required-helpers
   ["handoff_lib.bb" "swarm_handoff.sh" "swarm_handoff.bb"
+   "merge_and_process.sh" "merge_and_process.bb"
    "ready_for_next.sh" "ready_for_next.bb"
    "done_with_current.sh" "done_with_current.bb"
    "ready_for_next_task.sh" "ready_for_next_task.bb"

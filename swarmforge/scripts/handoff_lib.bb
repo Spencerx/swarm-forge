@@ -5,9 +5,16 @@
             [babashka.process]
             [clojure.string :as str]))
 
-(defn role []
-  (or (System/getenv "SWARMFORGE_ROLE")
-      (throw (ex-info "Set SWARMFORGE_ROLE." {:exit 1}))))
+(defn same-path? [a b]
+  (try
+    (= (str (fs/canonicalize a)) (str (fs/canonicalize b)))
+    (catch Exception _
+      (= (str a) (str b)))))
+
+(defn git-toplevel []
+  (let [out (:out (babashka.process/sh {:continue true} "git" "rev-parse" "--show-toplevel"))]
+    (when-not (str/blank? out)
+      (str/trim out))))
 
 (defn state-dir []
   (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs"))
@@ -39,6 +46,20 @@
 (defn role-rows []
   (->> (str/split-lines (slurp (str (roles-file))))
        (map #(str/split % #"\t" -1))))
+
+(defn infer-role-from-worktree []
+  (let [here (or (git-toplevel) (str (fs/cwd)))]
+    (some (fn [cols]
+            (let [role-name (first cols)
+                  wt (when (>= (count cols) 3) (nth cols 2))]
+              (when (and (not-empty role-name) (not-empty wt) (same-path? wt here))
+                role-name)))
+          (role-rows))))
+
+(defn role []
+  (or (not-empty (System/getenv "SWARMFORGE_ROLE"))
+      (infer-role-from-worktree)
+      (throw (ex-info "Set SWARMFORGE_ROLE." {:exit 1}))))
 
 (defn role-row [role-name]
   (or (some #(when (= role-name (first %)) %) (role-rows))

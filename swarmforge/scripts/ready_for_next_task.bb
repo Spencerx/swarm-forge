@@ -2,7 +2,10 @@
 
 (ns ready-for-next-task
   (:require [babashka.fs :as fs]
+            [clojure.java.shell :as sh]
             [clojure.string :as str]))
+
+(def script-dir (fs/parent *file*))
 
 (defn state-dir []
   (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs"))
@@ -87,6 +90,15 @@
       (println line)))
   (System/exit status))
 
+(defn merge-git-handoff! [file]
+  (when (= "git_handoff" (header-field file "type"))
+    (let [from (header-field file "from")
+          commit (header-field file "commit")]
+      (when (and from commit)
+        (let [result (sh/sh (str (fs/path script-dir "merge_and_process.sh")) from commit)]
+          (when-not (zero? (:exit result))
+            (fail! 1 (str/trim (str (:err result) "\n" (:out result))))))))))
+
 (defn -main []
   (let [inbox (inbox-dir)
         new-dir (fs/path inbox "new")
@@ -105,7 +117,9 @@
                "AMBIGUOUS_TASK_STATE: multiple tasks are already in process."
                (str/join "\n" (map #(str "- " %) in-process-files))))
       (if (= 1 (count in-process-files))
-        (print-task (first in-process-files))
+        (let [file (first in-process-files)]
+          (merge-git-handoff! file)
+          (print-task file))
         (let [new-files (handoff-files new-dir)]
           (if (empty? new-files)
             (println "NO_TASK")
@@ -115,6 +129,7 @@
                 (fail! 2 (str "AMBIGUOUS_TASK_STATE: target in-process file already exists: " target-file)))
               (fs/move source-file target-file)
               (set-header! target-file "dequeued_at" (timestamp))
+              (merge-git-handoff! target-file)
               (print-task target-file))))))))
 
 (-main)

@@ -68,8 +68,8 @@
      :content content}))
 
 (defn render-message [headers body]
-  (let [preferred ["id" "from" "to" "recipient" "priority" "type" "role" "commit"
-                   "message" "created_at" "enqueued_at" "dequeued_at" "completed_at"]
+  (let [preferred ["id" "from" "to" "recipient" "priority" "type" "role" "task" "commit"
+                   "artifacts" "message" "created_at" "enqueued_at" "dequeued_at" "completed_at"]
         remaining (->> (keys headers)
                        (remove (set preferred))
                        sort)

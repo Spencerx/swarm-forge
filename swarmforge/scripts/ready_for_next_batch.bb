@@ -2,7 +2,10 @@
 
 (ns ready-for-next-batch
   (:require [babashka.fs :as fs]
+            [clojure.java.shell :as sh]
             [clojure.string :as str]))
+
+(def script-dir (fs/parent *file*))
 
 (defn inbox-dir []
   (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs" "inbox"))
@@ -102,6 +105,19 @@
       (println line)))
   (System/exit status))
 
+(defn merge-git-handoff! [file]
+  (when (= "git_handoff" (header-field file "type"))
+    (let [from (header-field file "from")
+          commit (header-field file "commit")]
+      (when (and from commit)
+        (let [result (sh/sh (str (fs/path script-dir "merge_and_process.sh")) from commit)]
+          (when-not (zero? (:exit result))
+            (fail! 1 (str/trim (str (:err result) "\n" (:out result))))))))))
+
+(defn merge-batch! [batch-dir]
+  (doseq [file (handoff-files batch-dir)]
+    (merge-git-handoff! file)))
+
 (defn new-batch-dir [in-process-dir]
   (loop [suffix 1]
     (let [dir (fs/path in-process-dir (format "batch_%s_%06d" (id-timestamp) suffix))]
@@ -127,7 +143,9 @@
                "AMBIGUOUS_TASK_STATE: multiple batches are already in process."
                (str/join "\n" (map #(str "- " %) in-process-batches))))
       (if (= 1 (count in-process-batches))
-        (print-batch (first in-process-batches))
+        (let [batch-dir (first in-process-batches)]
+          (merge-batch! batch-dir)
+          (print-batch batch-dir))
         (let [new-files (handoff-files new-dir)]
           (if (empty? new-files)
             (println "NO_TASK")
@@ -143,6 +161,7 @@
                   (set-header! target-file "dequeued_at" (timestamp))))
               (when (empty? selected-files)
                 (fail! 2 (str "AMBIGUOUS_TASK_STATE: no tasks selected for batch priority " batch-priority ".")))
+              (merge-batch! batch-dir)
               (print-batch batch-dir))))))))
 
 (-main)

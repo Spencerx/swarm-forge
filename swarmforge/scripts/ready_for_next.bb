@@ -41,8 +41,25 @@
         (exit! 1 "Cannot find SwarmForge project root")))
     (exit! 1 "Cannot find SwarmForge project root")))
 
+(defn same-path? [a b]
+  (try
+    (= (str (fs/canonicalize a)) (str (fs/canonicalize b)))
+    (catch Exception _
+      (= (str a) (str b)))))
+
+(defn infer-role-from-worktree []
+  (let [here (or (git-root) (str (fs/absolutize ".")))]
+    (some (fn [line]
+            (let [cols (str/split line #"\t")
+                  role-name (first cols)
+                  wt (when (>= (count cols) 3) (nth cols 2))]
+              (when (and (not-empty role-name) (not-empty wt) (same-path? wt here))
+                role-name)))
+          (str/split-lines (slurp (str (fs/path (project-root) ".swarmforge" "roles.tsv")))))))
+
 (defn role []
   (or (not-empty (System/getenv "SWARMFORGE_ROLE"))
+      (infer-role-from-worktree)
       (exit! 1 "Set SWARMFORGE_ROLE.")))
 
 (defn receive-mode [role-name]
