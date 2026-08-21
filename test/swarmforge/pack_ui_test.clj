@@ -296,7 +296,7 @@
     (is (= [{:name "htw-console-app" :lane "specifier" :updated_at updated}]
            (:tasks state)))
     (is (= [] (:approvals state)))
-    (is (= [] (:work_in_flight state)))))
+    (is (= six-pack-roles (mapv :role (:work_in_flight state))))))
 
 (defn dashboard-html [root]
   (:out (pack-web root true "--test-html")))
@@ -485,7 +485,9 @@
       (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "-l" text]
              (first argv)))
       (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "C-m"]
-             (second argv))))))
+             (second argv)))
+      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "C-j"]
+             (nth argv 2))))))
 
 (deftest pack-web-post-task-injects-payload-into-master-session
   ;; Given a tmux argv stub
@@ -503,7 +505,8 @@
       (is (zero? (:exit result)))
       (is (= "specifier" (task-lane root "htw-console-app")))
       (is (= example-task-payload (last (first argv))))
-      (is (= "C-m" (last (second argv)))))))
+      (is (= "C-m" (last (second argv))))
+      (is (= "C-j" (last (nth argv 2)))))))
 
 (deftest pack-web-post-chat-injects-text-as-is
   ;; Given a tmux argv stub
@@ -521,7 +524,8 @@
       (is (zero? (:exit result)))
       (is (= text (last (first argv))))
       (is (not (str/starts-with? (str (last (first argv))) "Task:")))
-      (is (= "C-m" (last (second argv)))))))
+      (is (= "C-m" (last (second argv))))
+      (is (= "C-j" (last (nth argv 2)))))))
 
 (deftest attention-reject-injects-a-message-to-master
   ;; Given a pending approval and a tmux argv stub
@@ -549,7 +553,8 @@
       (is (= [] (pending-names root)))
       (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app")))
       (is (= "Rejected: htw-console-app" (last (first argv))))
-      (is (= "C-m" (last (second argv)))))))
+      (is (= "C-m" (last (second argv))))
+      (is (= "C-j" (last (nth argv 2)))))))
 
 (deftest pack-dashboard-chat-rail-posts-to-master
   ;; Given dashboard HTML
@@ -560,6 +565,16 @@
     (is (re-find #"id=\"chat-input\"" html))
     (is (str/includes? html "/api/chat"))))
 
+(deftest pack-web-lists-every-role-in-the-work-queue
+  ;; Given a six-pack with no in_process mail
+  ;; When pack_web --test-state
+  ;; Then work_in_flight has one row per conf role
+  (let [root (tmp-dir)
+        _ (setup-pack! root six-pack-roles)
+        wif (:work_in_flight (web-state root))]
+    (is (= six-pack-roles (mapv :role wif)))
+    (is (every? #(= "no_session" (:state %)) wif))))
+
 (deftest pack-web-lists-in-process-work-in-flight
   ;; Given in_process handoff for coder task cave-walk
   ;; When pack_web --test-state
@@ -569,11 +584,30 @@
     (setup-pack! root roles)
     (put-in-process! root roles "coder" {:from "specifier" :task "cave-walk"})
     (let [wif (:work_in_flight (web-state root))
-          row (first wif)]
-      (is (= 1 (count wif)))
+          row (some #(when (= "coder" (:role %)) %) wif)]
+      (is (= roles (mapv :role wif)))
       (is (= "cave-walk" (:task row)))
       (is (= "coder" (:role row)))
       (is (re-matches #"\d{4}-\d{2}-\d{2}T.*Z" (or (:updated_at row) ""))))))
+
+(deftest pack-web-marks-in-process-roles-live-when-session-exists
+  ;; Given coder in_process and live tmux sessions
+  ;; When pack_web --test-state
+  ;; Then coder is live with that task and specifier is idle
+  (let [root (tmp-dir)
+        roles ["specifier" "coder"]
+        sock (do (setup-pack! root roles)
+                 (put-in-process! root roles "coder" {:from "specifier" :task "cave-walk"})
+                 (start-tmux! root roles))]
+    (try
+      (let [wif (:work_in_flight (web-state root))
+            by-role (into {} (map (juxt :role identity) wif))]
+        (is (= "idle" (:state (get by-role "specifier"))))
+        (is (= "live" (:state (get by-role "coder"))))
+        (is (= "cave-walk" (:task (get by-role "coder"))))
+        (is (= "" (:task (get by-role "specifier")))))
+      (finally
+        (stop-tmux! sock)))))
 
 (deftest pack-web-lists-batch-in-process-in-work-in-flight
   ;; Given a batch dir in coder in_process for task cave-walk
@@ -597,10 +631,20 @@
     (is (str/includes? html "Work Queue"))
     (is (str/includes? html "data-open-agent"))
     (is (str/includes? html "data.work_in_flight"))
+    (is (str/includes? html "item.state"))
     (is (str/includes? html "/agent/"))
+    (is (str/includes? html "setInterval(loadState"))
     (is (not (str/includes? html "Open SL")))
     (is (not (str/includes? html "sl-therm")))
     (is (not (str/includes? html "merger")))))
+
+(deftest pack-agent-page-polls-live-pane
+  ;; When serving the agent session window
+  ;; Then it polls /api/agents/<role>/pane
+  (let [result (pack-web (tmp-dir) false "--test-agent-page" "specifier")]
+    (is (zero? (:exit result)))
+    (is (str/includes? (:out result) "/api/agents/specifier/pane"))
+    (is (str/includes? (:out result) "setInterval(refresh"))))
 
 (deftest pack-web-test-pane-prints-recorded-pane
   ;; Given a recorded pane.txt for coder task cave-walk

@@ -52,7 +52,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .work col.c-story{width:42%}.work col.c-role{width:5.5rem}.work col.c-state{width:2.25rem}.work col.c-age{width:2.75rem}
 .work td:nth-child(4),.work th:nth-child(4){text-align:right}
 .linkish{color:var(--accent);text-decoration:underline;background:none;border:0;font:inherit;padding:0;cursor:pointer;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;text-align:left}
-.st-ico{display:inline-block;width:10px;height:10px;vertical-align:middle;border-radius:50%}
+.st-ico{display:inline-block;width:10px;height:10px;vertical-align:middle;border-radius:50%;background:#c5cbc2}
 .st-ico.dot-green{background:var(--green)}
 .st-ico.dot-yellow{background:#d4a017}
 .wif-therm{display:inline-flex;align-items:center;gap:1px;margin-left:4px;vertical-align:middle}
@@ -233,7 +233,23 @@ function age(iso) {
 }
 
 function openAgentWindow(url, name) {
-  window.open(url, name, "popup=yes,width=780,height=560");
+  const sep = url.indexOf("?") >= 0 ? "&" : "?";
+  window.open(url + sep + "_open=" + Date.now(), name, "popup=yes,width=780,height=560");
+}
+
+function stateIcon(state) {
+  const ico = document.createElement("span");
+  if (state === "live") {
+    ico.className = "st-ico dot-green";
+    ico.title = "live";
+  } else if (state === "idle") {
+    ico.className = "st-ico dot-yellow";
+    ico.title = "idle";
+  } else {
+    ico.className = "st-ico";
+    ico.title = "no session";
+  }
+  return ico;
 }
 
 function workRow(item) {
@@ -248,12 +264,16 @@ function workRow(item) {
   link.setAttribute("data-open-agent", item.role || "");
   link.title = "open " + (item.role || "") + " session";
   link.textContent = item.role || "";
-  role.appendChild(link);
+  const therm = document.createElement("span");
+  therm.className = "wif-therm" + (item.state === "live" ? " busy" : "");
+  for (let i = 0; i < 6; i++) {
+    const bar = document.createElement("span");
+    bar.className = "bar";
+    therm.appendChild(bar);
+  }
+  role.append(link, therm);
   const state = document.createElement("td");
-  const ico = document.createElement("span");
-  ico.className = "st-ico dot-green";
-  ico.title = "in process";
-  state.appendChild(ico);
+  state.appendChild(stateIcon(item.state));
   const ageCell = document.createElement("td");
   ageCell.textContent = age(item.updated_at);
   tr.append(task, role, state, ageCell);
@@ -408,6 +428,7 @@ document.addEventListener("click", (event) => {
   if (role) openAgentWindow("/agent/" + encodeURIComponent(role), "agent-" + role);
 });
 loadState();
+setInterval(loadState, 2000);
 </script>
 </body>
 </html>

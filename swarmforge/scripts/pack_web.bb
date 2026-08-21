@@ -21,6 +21,7 @@
        "  pack_web.sh --test-approve <root> <id>\n"
        "  pack_web.sh --test-reject <root> <id>\n"
        "  pack_web.sh --test-pane <root> <role>\n"
+       "  pack_web.sh --test-agent-page [role]\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
 (def example-task-name "htw-console-app")
@@ -99,7 +100,10 @@
         (send-keys! socket session "-l" text)
         (when-not (tmux-stub)
           (Thread/sleep 150))
-        (send-keys! socket session "C-m")))
+        (send-keys! socket session "C-m")
+        (when-not (tmux-stub)
+          (Thread/sleep 50))
+        (send-keys! socket session "C-j")))
     (catch Exception _)))
 
 (defn pack-board [root & args]
@@ -203,15 +207,44 @@
 (defn in-process-dir [worktree]
   (fs/path worktree ".swarmforge" "handoffs" "inbox" "in_process"))
 
-(defn work-for-role [row]
-  (let [role (first row)
-        worktree (nth row 2 nil)]
+(defn session-alive? [socket session]
+  (boolean
+   (when (and socket session)
+     (zero? (:exit (sh "tmux" "-S" socket "has-session" "-t" session))))))
+
+(defn role-queue-state [alive? busy?]
+  (cond
+    (not alive?) "no_session"
+    busy? "live"
+    :else "idle"))
+
+(defn in-process-for-row [row]
+  (let [worktree (nth row 2 nil)]
     (if (str/blank? worktree)
       []
-      (mapv #(work-entry role %) (in-process-files (in-process-dir worktree))))))
+      (in-process-files (in-process-dir worktree)))))
+
+(defn session-name [row]
+  (let [role (first row)
+        session (nth row 3 nil)]
+    (if (str/blank? session)
+      (str "swarmforge-" role)
+      session)))
+
+(defn work-row-for-role [socket row]
+  (let [role (first row)
+        files (in-process-for-row row)
+        path (first files)
+        from-file (when path (work-entry role path))
+        alive? (session-alive? socket (session-name row))]
+    {:task (or (:task from-file) "")
+     :role role
+     :state (role-queue-state alive? (some? path))
+     :updated_at (or (:updated_at from-file) "")}))
 
 (defn work-in-flight [root]
-  (vec (mapcat work-for-role (role-rows root))))
+  (let [socket (tmux-socket root)]
+    (mapv #(work-row-for-role socket %) (role-rows root))))
 
 (defn dashboard-state [root]
   (let [master (master-role root)]
@@ -397,19 +430,38 @@
       (str "(no pane capture for " role ")\n")))
 
 (defn pane-page [role snapshot]
-  (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-       "<title>Agent " (html-escape role) "</title>"
-       "<style>html,body{height:100%;margin:0;background:#111;color:#f4f4f4;"
-       "font-family:ui-monospace,Menlo,monospace}"
-       "header{padding:10px 12px;border-bottom:1px solid #333}"
-       "h1{font:inherit;margin:0;font-size:14px}"
-       "#pane{margin:0;padding:12px;white-space:pre-wrap;overflow:auto;"
-       "height:calc(100vh - 42px)}</style></head>"
-       "<body><header><h1>" (html-escape role) "</h1></header>"
-       "<pre id=\"pane\">" (html-escape snapshot) "</pre></body></html>"))
+  (let [role-html (html-escape role)
+        pane-url (str "/api/agents/" role-html "/pane")]
+    (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+         "<title>Agent " role-html "</title>"
+         "<style>html,body{height:100%;margin:0;overflow:hidden;background:#111;color:#f4f4f4;"
+         "font-family:ui-monospace,Menlo,monospace}"
+         "body{display:flex;flex-direction:column}"
+         "header{padding:10px 12px;border-bottom:1px solid #333;flex:0 0 auto}"
+         "h1{font:inherit;margin:0;font-size:14px}"
+         "#pane{flex:1 1 auto;margin:0;padding:12px;white-space:pre-wrap;overflow:auto;"
+         "min-height:0;height:calc(100vh - 42px)}</style></head>"
+         "<body><header><h1>" role-html "</h1></header>"
+         "<pre id=\"pane\">" (html-escape snapshot) "</pre>"
+         "<script>(function(){"
+         "const pane=document.getElementById('pane');"
+         "function toEnd(){pane.scrollTop=pane.scrollHeight;}"
+         "async function refresh(){"
+         "const r=await fetch('" pane-url "',{cache:'no-store'});"
+         "const text=await r.text();"
+         "if(text!==pane.textContent){pane.textContent=text;toEnd();}"
+         "}"
+         "refresh();setInterval(refresh,1000);"
+         "window.addEventListener('load',toEnd);"
+         "})();</script></body></html>")))
 
 (defn agent-role [uri]
   (when-let [[_ role] (re-matches #"/agent/([^/]+)"
+                                 (first (str/split (or uri "") #"\?")))]
+    (java.net.URLDecoder/decode role "UTF-8")))
+
+(defn agent-pane-role [uri]
+  (when-let [[_ role] (re-matches #"/api/agents/([^/]+)/pane"
                                  (first (str/split (or uri "") #"\?")))]
     (java.net.URLDecoder/decode role "UTF-8")))
 
@@ -418,6 +470,13 @@
     {:status 200
      :headers {"Content-Type" "text/html; charset=utf-8"}
      :body (pane-page role (pane-content root role))}
+    {:status 404 :body "Not found"}))
+
+(defn get-agent-pane [root uri]
+  (if-let [role (agent-pane-role uri)]
+    {:status 200
+     :headers {"Content-Type" "text/plain; charset=utf-8"}
+     :body (pane-content root role)}
     {:status 404 :body "Not found"}))
 
 (defn handle-get [root uri]
@@ -431,6 +490,9 @@
     {:status 200
      :headers {"Content-Type" "application/json"}
      :body (json/generate-string (dashboard-state root))}
+
+    (agent-pane-role uri)
+    (get-agent-pane root uri)
 
     (agent-role uri)
     (get-agent root uri)
@@ -588,7 +650,13 @@
 (defn test-pane! [root role]
   (when (str/blank? role)
     (exit! 1 "Missing role"))
-  (print (pane-content (require-root! root) role))
+  (print (:body (handle-request (require-root! root)
+                                {:method "GET"
+                                 :uri (str "/api/agents/" role "/pane")})))
+  (flush))
+
+(defn test-agent-page! [role]
+  (print (pane-page (or role "specifier") ""))
   (flush))
 
 (defn test-teardown! [root confirm]
@@ -651,6 +719,7 @@
     "--test-approve" (test-approval! (second args) (nth args 2 nil) "approve")
     "--test-reject" (test-approval! (second args) (nth args 2 nil) "reject")
     "--test-pane" (test-pane! (second args) (nth args 2 nil))
+    "--test-agent-page" (test-agent-page! (second args))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))
