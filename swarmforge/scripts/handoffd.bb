@@ -12,11 +12,13 @@
 
 (defn usage []
   (binding [*out* *err*]
-    (println "Usage: handoffd.bb <project-root>"))
+    (println "Usage: handoffd.bb [--once] <project-root>"))
   (System/exit 1))
 
+(def once? (some #(= "--once" %) *command-line-args*))
 (def project-root
-  (or (first *command-line-args*) (usage)))
+  (or (first (remove #(= "--once" %) *command-line-args*)) (usage)))
+(def script-dir (fs/parent *file*))
 
 (def state-dir (fs/path project-root ".swarmforge"))
 (def daemon-dir (fs/path state-dir "daemon"))
@@ -120,11 +122,34 @@
     (spit (str path ".error") (str reason "\n"))
     (move-with-collision path failed-dir)))
 
+(defn recipient-list [headers]
+  (some->> (get headers "to")
+           (#(str/split % #","))
+           (map str/trim)
+           (remove str/blank?)
+           seq))
+
+(defn pack-board! [& args]
+  (let [script (str (fs/path script-dir "pack_board.sh"))
+        result (apply sh (concat [script] args ["--root" (str project-root)]))]
+    (when-not (zero? (:exit result))
+      (log! "pack-board-failed" args (:err result) (:out result)))))
+
+(defn update-board! [headers]
+  (let [task (get headers "task")
+        recipients (recipient-list headers)]
+    (when (and (= "git_handoff" (get headers "type"))
+               (not (str/blank? task))
+               recipients)
+      (if (next recipients)
+        (pack-board! "done" "--name" task)
+        (pack-board! "move" "--name" task "--lane" (first recipients))))))
+
 (defn deliver! [roles socket sender-role path]
   (let [filename (fs/file-name path)
         message (parse-message path)
         headers (:headers message)
-        recipients (some-> (get headers "to") (str/split #",") seq)]
+        recipients (recipient-list headers)]
     (if-not recipients
       (fail! path "missing to header")
       (do
@@ -141,6 +166,7 @@
         (move-with-collision path
                              (fs/path (get-in roles [sender-role :worktree-path])
                                       ".swarmforge" "handoffs" "sent"))
+        (update-board! headers)
         (log! "delivered" (str path))))))
 
 (defn outbox-files [role-info]
@@ -188,7 +214,7 @@
     (log! "stopped")
     (catch Exception _ nil)))
 
-(defn -main []
+(defn run-daemon! []
   (fs/create-dirs daemon-dir)
   (fs/delete-if-exists stop-file)
   (spit (str pid-file) (str (.pid (java.lang.ProcessHandle/current)) "\n"))
@@ -201,5 +227,10 @@
     (finally
       (fs/delete-if-exists pid-file)
       (log! "stopped"))))
+
+(defn -main []
+  (if once?
+    (poll-once!)
+    (run-daemon!)))
 
 (-main)

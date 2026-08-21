@@ -9,6 +9,10 @@
   (str "Usage:\n"
        "  pack_board.sh create --name <name> --lane <lane> [--root <dir>] [--text <text>]\n"
        "  pack_board.sh create <name> <lane>\n"
+       "  pack_board.sh move --name <name> --lane <lane> [--root <dir>]\n"
+       "  pack_board.sh move <name> <lane>\n"
+       "  pack_board.sh done --name <name> [--root <dir>]\n"
+       "  pack_board.sh done <name>\n"
        "  pack_board.sh list [--root <dir>]"))
 
 (def flags {"--root" :root "--name" :name "--lane" :lane "--text" :text})
@@ -103,10 +107,10 @@
 (defn task-row [name lane now]
   (str/join "\t" [name lane now now]))
 
-(defn create-name [opts]
+(defn task-name [opts]
   (or (:name opts) (second (:positional opts))))
 
-(defn create-lane [opts]
+(defn task-lane [opts]
   (or (:lane opts) (nth (:positional opts) 2 nil)))
 
 (defn require-value! [value label]
@@ -114,8 +118,8 @@
     (exit! 1 (str "Missing " label))))
 
 (defn create! [opts]
-  (let [name (create-name opts)
-        lane (create-lane opts)
+  (let [name (task-name opts)
+        lane (task-lane opts)
         file (tasks-file (resolve-root opts))]
     (require-value! name "task name")
     (require-value! lane "lane")
@@ -123,6 +127,28 @@
       (when (find-task rows name)
         (exit! 1 (str "Duplicate task name: " name)))
       (write-rows file (conj rows (task-row name lane (timestamp)))))))
+
+(defn rewrite-lane [line name lane]
+  (let [[row-name _ created] (str/split line #"\t")]
+    (if (= name row-name)
+      (str/join "\t" [name lane created (timestamp)])
+      line)))
+
+(defn set-lane! [opts lane]
+  (let [name (task-name opts)
+        file (tasks-file (resolve-root opts))]
+    (require-value! name "task name")
+    (require-value! lane "lane")
+    (let [rows (read-rows file)]
+      (when-not (find-task rows name)
+        (exit! 1 (str "Unknown task name: " name)))
+      (write-rows file (mapv #(rewrite-lane % name lane) rows)))))
+
+(defn move! [opts]
+  (set-lane! opts (task-lane opts)))
+
+(defn done! [opts]
+  (set-lane! opts "done"))
 
 (defn list! [opts]
   (let [file (tasks-file (resolve-root opts))]
@@ -134,6 +160,8 @@
   (let [opts (parse-args args)]
     (case (first (:positional opts))
       "create" (create! opts)
+      "move" (move! opts)
+      "done" (done! opts)
       "list" (list! opts)
       (do (usage)
           (exit! 1 nil))))

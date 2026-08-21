@@ -39,11 +39,20 @@
   (fs/create-dirs (fs/parent path))
   (spit (str path) text))
 
-(defn setup-pack! [root]
-  (write-file
-   (fs/path root ".swarmforge/roles.tsv")
-   (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n"
-           root)))
+(defn setup-pack!
+  ([root] (setup-pack! root ["specifier"]))
+  ([root roles]
+   (write-file
+    (fs/path root ".swarmforge/roles.tsv")
+    (apply str
+           (for [role roles]
+             (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\n"
+                     role role root role (str/capitalize role)))))
+   (doseq [dir [".swarmforge/handoffs/outbox"
+                ".swarmforge/handoffs/sent"
+                ".swarmforge/handoffs/failed"
+                ".swarmforge/handoffs/inbox/new"]]
+     (fs/create-dirs (fs/path root dir)))))
 
 (defn pack-board
   ([root ok? & args]
@@ -65,6 +74,35 @@
 (defn task-row [listed name]
   (some #(when (str/starts-with? % (str name "\t")) %)
         (str/split-lines listed)))
+
+(defn task-lane [root name]
+  (let [cols (str/split (or (task-row (:out (list-tasks root)) name) "") #"\t")]
+    (nth cols 1 nil)))
+
+(defn queue-handoff! [root {:keys [from to task]}]
+  (write-file
+   (fs/path root ".swarmforge/handoffs/outbox"
+            (str "50_from_" from "_to_" (str/replace to #"," "_") ".handoff"))
+   (str "from: " from "\n"
+        "to: " to "\n"
+        "priority: 50\n"
+        "type: git_handoff\n"
+        "task: " task "\n"
+        "\n"
+        "payload\n")))
+
+(defn start-tmux! [root sessions]
+  (let [sock (str (fs/path root "tmux.sock"))]
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (doseq [session sessions]
+      (run {:dir root} "tmux" "-S" sock "new-session" "-d" "-s" session "sleep" "120"))
+    sock))
+
+(defn stop-tmux! [sock]
+  (run {:dir "." :ok? false} "tmux" "-S" sock "kill-server"))
+
+(defn handoffd-once [root]
+  (run {:dir root} "bb" (script "handoffd.bb") "--once" (str root)))
 
 (deftest pack-board-creates-a-task-in-the-master-lane
   ;; Given a pack with specifier on master
@@ -96,6 +134,39 @@
     (is (not (zero? (:exit duplicate))))
     (is (str/includes? (str (:err duplicate) (:out duplicate)) "Duplicate"))
     (is (= before after))))
+
+(deftest handoffd-moves-the-task-card-to-the-recipient
+  ;; Given card htw-console-app in specifier
+  ;; When a git_handoff specifier→coder for that task is delivered
+  ;; Then the card lane is coder
+  (let [root (tmp-dir)
+        roles ["specifier" "coder"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "htw-console-app" "specifier")
+                 (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "coder" (task-lane root "htw-console-app")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-marks-the-task-card-done-for-multi-recipient-handoff
+  ;; Given card htw-console-app in QA
+  ;; When a git_handoff QA→specifier,coder,cleaner,architect,hardender is delivered
+  ;; Then the card lane is done
+  (let [root (tmp-dir)
+        roles ["QA" "specifier" "coder" "cleaner" "architect" "hardender"]
+        to "specifier,coder,cleaner,architect,hardender"
+        sock (do (setup-pack! root roles)
+                 (create-task root "htw-console-app" "QA")
+                 (queue-handoff! root {:from "QA" :to to :task "htw-console-app"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "htw-console-app")))
+      (finally
+        (stop-tmux! sock)))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
