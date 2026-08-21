@@ -13,8 +13,17 @@
        "  pack_web.sh --test-state <root>\n"
        "  pack_web.sh --test-html\n"
        "  pack_web.sh --test-post-task <root> <name> <text>\n"
+       "  pack_web.sh --test-post-chat <root> <text>\n"
+       "  pack_web.sh --test-inject-payload [name text]\n"
+       "  pack_web.sh --test-inject-argv <root> <file> <text>\n"
        "  pack_web.sh --test-approve <root> <id>\n"
        "  pack_web.sh --test-reject <root> <id>"))
+
+(def example-task-name "htw-console-app")
+(def example-task-text
+  "Integrate the stories in ~/junk/htw-stories into one console application.")
+
+(def ^:dynamic *tmux-stub* nil)
 
 (defn usage []
   (binding [*out* *err*]
@@ -31,6 +40,61 @@
        (remove str/blank?)
        (map str/capitalize)
        (str/join " ")))
+
+(defn task-payload
+  ([] (task-payload example-task-name example-task-text))
+  ([name text] (str "Task: " name "\n\n" (or text ""))))
+
+(defn reject-message [task]
+  (str "Rejected: " task))
+
+(defn tmux-stub []
+  (or *tmux-stub* (System/getenv "SWARMFORGE_TMUX_STUB")))
+
+(defn record-argv! [file argv]
+  (when-let [dir (fs/parent file)]
+    (fs/create-dirs dir))
+  (spit (str file) (str (pr-str (vec argv)) "\n") :append true))
+
+(defn send-keys! [socket session & keys]
+  (let [argv (into ["tmux" "-S" socket "send-keys" "-t" session] keys)]
+    (if-let [stub (tmux-stub)]
+      (record-argv! stub argv)
+      (let [result (apply sh argv)]
+        (when-not (zero? (:exit result))
+          (throw (ex-info "tmux send-keys failed" result)))))))
+
+(defn role-rows [root]
+  (let [file (fs/path root ".swarmforge" "roles.tsv")]
+    (if (fs/exists? file)
+      (->> (str/split-lines (slurp (str file)))
+           (remove str/blank?)
+           (mapv #(str/split % #"\t" -1)))
+      [])))
+
+(defn master-session [root]
+  (when-let [row (some #(when (= "master" (nth % 1 nil)) %) (role-rows root))]
+    (let [session (nth row 3 nil)
+          role (first row)]
+      (if (str/blank? session)
+        (str "swarmforge-" role)
+        session))))
+
+(defn tmux-socket [root]
+  (let [file (fs/path root ".swarmforge" "tmux-socket")]
+    (when (fs/exists? file)
+      (not-empty (str/trim (slurp (str file)))))))
+
+(defn inject-master! [root text]
+  (try
+    (let [socket (tmux-socket root)
+          session (master-session root)]
+      (when (and socket session (not (str/blank? text)))
+        (send-keys! socket session "-l" text)
+        (when-not (tmux-stub)
+          (Thread/sleep 150))
+        (send-keys! socket session "C-m")))
+    (catch Exception _)))
 
 (defn pack-board [root & args]
   (let [script (str (fs/path script-dir "pack_board.sh"))
@@ -122,7 +186,8 @@
   (pack-board root "create"
               "--name" name
               "--lane" (master-role root)
-              "--text" (or text "")))
+              "--text" (or text ""))
+  (inject-master! root (task-payload name (or text ""))))
 
 (defn json-ok []
   {:status 200
@@ -132,6 +197,11 @@
 (defn post-tasks [root body]
   (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
     (create-task! root name text)
+    (json-ok)))
+
+(defn post-chat [root body]
+  (let [{:keys [text]} (json/parse-string (or body "{}") true)]
+    (inject-master! root (or text ""))
     (json-ok)))
 
 (defn pending-file [root id]
@@ -165,7 +235,9 @@
   (let [src (require-pending! root id)
         task (get-in (parse-message src) [:headers "task"])]
     (fs/delete-if-exists src)
-    (write-reject-notify! root task)))
+    (write-reject-notify! root task)
+    (when-not (str/blank? task)
+      (inject-master! root (reject-message task)))))
 
 (defn approval-route [uri]
   (let [path (first (str/split (or uri "") #"\?"))]
@@ -233,6 +305,7 @@
 (defn handle-post [root uri body]
   (cond
     (= "/api/tasks" uri) (post-tasks root body)
+    (= "/api/chat" uri) (post-chat root body)
     (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri)
     :else {:status 404 :body "Not found"}))
 
@@ -255,6 +328,23 @@
                    :uri "/api/tasks"
                    :body (json/generate-string {:name name :text (or text "")})}))
 
+(defn test-post-chat! [root text]
+  (handle-request (require-root! root)
+                  {:method "POST"
+                   :uri "/api/chat"
+                   :body (json/generate-string {:text (or text "")})}))
+
+(defn test-inject-payload! [name text]
+  (println (if (and name text)
+             (task-payload name text)
+             (task-payload))))
+
+(defn test-inject-argv! [root file text]
+  (when (str/blank? file)
+    (exit! 1 "Missing argv file"))
+  (binding [*tmux-stub* file]
+    (inject-master! (require-root! root) text)))
+
 (defn test-approval! [root id action]
   (when (str/blank? id)
     (exit! 1 "Missing approval id"))
@@ -267,6 +357,9 @@
     "--test-state" (test-state! (second args))
     "--test-html" (test-html!)
     "--test-post-task" (test-post-task! (second args) (nth args 2 nil) (nth args 3 nil))
+    "--test-post-chat" (test-post-chat! (second args) (nth args 2 nil))
+    "--test-inject-payload" (test-inject-payload! (second args) (nth args 2 nil))
+    "--test-inject-argv" (test-inject-argv! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-approve" (test-approval! (second args) (nth args 2 nil) "approve")
     "--test-reject" (test-approval! (second args) (nth args 2 nil) "reject")
     (do (usage)

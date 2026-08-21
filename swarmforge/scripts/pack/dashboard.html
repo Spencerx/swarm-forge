@@ -305,10 +305,31 @@ async function submitNewTask() {
   loadState();
 }
 
+async function sendChat() {
+  const text = $("chat-input").value.trim();
+  if (!text) return;
+  await fetch("/api/chat", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text})
+  });
+  const bubble = document.createElement("div");
+  bubble.className = "bubble-you";
+  bubble.textContent = text;
+  $("chat-history").appendChild(bubble);
+  $("chat-input").value = "";
+}
+
 $("btn-new-task").onclick = () => $("new-task-layer").classList.add("open");
 $("nt-cancel").onclick = closeNewTask;
 $("nt-ok").onclick = submitNewTask;
 $("doc-close").onclick = () => $("doc-layer").classList.remove("open");
+$("chat-input").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    sendChat();
+  }
+});
 loadState();
 </script>
 </body>

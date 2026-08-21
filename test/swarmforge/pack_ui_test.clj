@@ -78,6 +78,16 @@
   ([root ok? & args]
    (apply run {:dir root :ok? ok?} (script "pack_web.sh") args)))
 
+(defn pack-web-env
+  [root env & args]
+  (apply run {:dir root :env env} (script "pack_web.sh") args))
+
+(defn read-argv [path]
+  (when (fs/exists? path)
+    (->> (str/split-lines (slurp (str path)))
+         (remove str/blank?)
+         (mapv read-string))))
+
 (defn create-task
   ([root name lane] (create-task root name lane true))
   ([root name lane ok?]
@@ -408,6 +418,126 @@
     (is (str/includes? html "/doc?path="))
     (is (str/includes? html "Approve"))
     (is (str/includes? html "Reject"))))
+
+(def example-task-text
+  "Integrate the stories in ~/junk/htw-stories into one console application.")
+
+(def example-task-payload
+  (str "Task: htw-console-app\n\n" example-task-text))
+
+(deftest inject-payload-formats-task-name-and-body
+  ;; Given the New Task example name and body
+  ;; When pack_web --test-inject-payload
+  ;; Then it prints Task: name, a blank line, and the body
+  (let [result (pack-web (tmp-dir) false "--test-inject-payload")]
+    (is (zero? (:exit result)))
+    (is (= (str example-task-payload "\n") (:out result)))))
+
+(deftest pack-web-post-task-creates-a-card-when-tmux-is-missing
+  ;; Given no tmux socket or live session
+  ;; When POST /api/tasks via --test-post-task
+  ;; Then inject failure is ignored and the card is still created
+  (let [root (tmp-dir)
+        text example-task-text]
+    (setup-pack! root ["coder" "cleaner"])
+    (let [result (pack-web root false "--test-post-task" (str root) "htw-console-app" text)
+          body (slurp (str (fs/path root ".swarmforge/board/htw-console-app.txt")))]
+      (is (zero? (:exit result)))
+      (is (= "coder" (task-lane root "htw-console-app")))
+      (is (= text body)))))
+
+(deftest inject-master-records-send-keys-argv
+  ;; Given master session swarmforge-specifier in roles.tsv
+  ;; When --test-inject-argv records the would-be tmux argv
+  ;; Then it send-keys -l the text to that session, then C-m
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))
+        text "hello from operator"]
+    (write-file
+     (fs/path root ".swarmforge/roles.tsv")
+     (str "specifier\tmaster\t" root "\tswarmforge-specifier\tSpecifier\tcodex\ttask\n"))
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (let [result (pack-web root false "--test-inject-argv" (str root) argv-file text)
+          argv (read-argv argv-file)]
+      (is (zero? (:exit result)))
+      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "-l" text]
+             (first argv)))
+      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "C-m"]
+             (second argv))))))
+
+(deftest pack-web-post-task-injects-payload-into-master-session
+  ;; Given a tmux argv stub
+  ;; When POST /api/tasks records name and text
+  ;; Then the card is created and inject-master! send-keys the Task payload
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))
+        text example-task-text]
+    (setup-pack! root)
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                               "--test-post-task" (str root) "htw-console-app" text)
+          argv (read-argv argv-file)]
+      (is (zero? (:exit result)))
+      (is (= "specifier" (task-lane root "htw-console-app")))
+      (is (= example-task-payload (last (first argv))))
+      (is (= "C-m" (last (second argv)))))))
+
+(deftest pack-web-post-chat-injects-text-as-is
+  ;; Given a tmux argv stub
+  ;; When POST /api/chat {text}
+  ;; Then inject-master! send-keys that text, not a Task payload
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))
+        text "Please add a --help flag"]
+    (setup-pack! root)
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                               "--test-post-chat" (str root) text)
+          argv (read-argv argv-file)]
+      (is (zero? (:exit result)))
+      (is (= text (last (first argv))))
+      (is (not (str/starts-with? (str (last (first argv))) "Task:")))
+      (is (= "C-m" (last (second argv)))))))
+
+(deftest attention-reject-injects-a-message-to-master
+  ;; Given a pending approval and a tmux argv stub
+  ;; When --test-reject
+  ;; Then the notify file is written and master receives a one-line reject
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))]
+    (setup-pack! root six-pack-roles)
+    (create-task root "htw-console-app" "specifier")
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (write-file
+     (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
+     (str "from: specifier\n"
+          "to: coder\n"
+          "priority: 50\n"
+          "type: git_handoff\n"
+          "task: htw-console-app\n"
+          "\n"
+          "payload\n"))
+    (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                               "--test-reject" (str root) "50_from_specifier_to_coder")
+          argv (read-argv argv-file)]
+      (is (zero? (:exit result)))
+      (is (= [] (pending-names root)))
+      (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app")))
+      (is (= "Rejected: htw-console-app" (last (first argv))))
+      (is (= "C-m" (last (second argv)))))))
+
+(deftest pack-dashboard-chat-rail-posts-to-master
+  ;; Given dashboard HTML
+  ;; Then the rail title uses data.master_display and the composer posts /api/chat
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "data.master_display"))
+    (is (re-find #"id=\"master-title\"" html))
+    (is (re-find #"id=\"chat-input\"" html))
+    (is (str/includes? html "/api/chat"))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
