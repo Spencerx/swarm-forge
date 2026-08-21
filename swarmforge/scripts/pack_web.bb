@@ -17,7 +17,8 @@
        "  pack_web.sh --test-inject-payload [name text]\n"
        "  pack_web.sh --test-inject-argv <root> <file> <text>\n"
        "  pack_web.sh --test-approve <root> <id>\n"
-       "  pack_web.sh --test-reject <root> <id>"))
+       "  pack_web.sh --test-reject <root> <id>\n"
+       "  pack_web.sh --test-pane <root> <role>"))
 
 (def example-task-name "htw-console-app")
 (def example-task-text
@@ -163,6 +164,50 @@
 (defn approvals [root]
   (mapv approval-entry (pending-files root)))
 
+(defn listed [dir pred]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter pred)
+         (sort-by #(fs/file-name %))
+         vec)
+    []))
+
+(defn handoff-files [dir]
+  (listed dir #(and (fs/regular-file? %)
+                    (str/ends-with? (fs/file-name %) ".handoff"))))
+
+(defn batch-dirs [dir]
+  (listed dir #(and (fs/directory? %)
+                    (str/starts-with? (fs/file-name %) "batch_"))))
+
+(defn in-process-files [dir]
+  (into (handoff-files dir)
+        (mapcat handoff-files (batch-dirs dir))))
+
+(defn iso-mtime [path]
+  (.format java.time.format.DateTimeFormatter/ISO_INSTANT
+           (.toInstant (fs/last-modified-time path))))
+
+(defn work-entry [role path]
+  (let [headers (:headers (parse-message path))]
+    {:task (get headers "task")
+     :role role
+     :updated_at (or (not-empty (get headers "dequeued_at"))
+                     (iso-mtime path))}))
+
+(defn in-process-dir [worktree]
+  (fs/path worktree ".swarmforge" "handoffs" "inbox" "in_process"))
+
+(defn work-for-role [row]
+  (let [role (first row)
+        worktree (nth row 2 nil)]
+    (if (str/blank? worktree)
+      []
+      (mapv #(work-entry role %) (in-process-files (in-process-dir worktree))))))
+
+(defn work-in-flight [root]
+  (vec (mapcat work-for-role (role-rows root))))
+
 (defn dashboard-state [root]
   (let [master (master-role root)]
     {:master_role master
@@ -170,7 +215,7 @@
      :lanes (lanes root)
      :tasks (tasks root)
      :approvals (approvals root)
-     :work_in_flight []}))
+     :work_in_flight (work-in-flight root)}))
 
 (defn require-root! [root]
   (when (str/blank? root)
@@ -285,6 +330,91 @@
        :body (slurp (str (existing-path root rel)))}
       {:status 404 :body "Not found"})))
 
+(defn html-escape [value]
+  (-> (str value)
+      (str/replace "&" "&amp;")
+      (str/replace "<" "&lt;")
+      (str/replace ">" "&gt;")
+      (str/replace "\"" "&quot;")))
+
+(defn session-for-role [root role]
+  (when-let [row (some #(when (= role (first %)) %) (role-rows root))]
+    (let [session (nth row 3 nil)]
+      (if (str/blank? session)
+        (str "swarmforge-" role)
+        session))))
+
+(defn worktree-for-role [root role]
+  (when-let [row (some #(when (= role (first %)) %) (role-rows root))]
+    (nth row 2 nil)))
+
+(defn tmux-capture [socket session]
+  (try
+    (let [result (sh "tmux" "-S" socket "capture-pane" "-p" "-t" session "-S" "-")]
+      (when (zero? (:exit result))
+        (:out result)))
+    (catch Exception _)))
+
+(defn capture-pane [root role]
+  (let [socket (tmux-socket root)
+        session (session-for-role root role)]
+    (when (and socket session)
+      (tmux-capture socket session))))
+
+(defn pane-files [root role]
+  (let [dir (fs/path root ".swarmforge" "sessions" role)]
+    (if (fs/directory? dir)
+      (->> (fs/list-dir dir)
+           (map #(fs/path % "pane.txt"))
+           (filter fs/regular-file?)
+           vec)
+      [])))
+
+(defn in-process-task [root role]
+  (when-let [worktree (worktree-for-role root role)]
+    (some #(get-in (parse-message %) [:headers "task"])
+          (in-process-files (in-process-dir worktree)))))
+
+(defn pane-for-task [files task]
+  (when task
+    (some #(when (= task (fs/file-name (fs/parent %))) %) files)))
+
+(defn recorded-pane [root role]
+  (let [files (pane-files root role)
+        chosen (or (pane-for-task files (in-process-task root role))
+                   (last (sort-by str files)))]
+    (when chosen
+      (slurp (str chosen)))))
+
+(defn pane-content [root role]
+  (or (not-empty (capture-pane root role))
+      (not-empty (recorded-pane root role))
+      (str "(no pane capture for " role ")\n")))
+
+(defn pane-page [role snapshot]
+  (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+       "<title>Agent " (html-escape role) "</title>"
+       "<style>html,body{height:100%;margin:0;background:#111;color:#f4f4f4;"
+       "font-family:ui-monospace,Menlo,monospace}"
+       "header{padding:10px 12px;border-bottom:1px solid #333}"
+       "h1{font:inherit;margin:0;font-size:14px}"
+       "#pane{margin:0;padding:12px;white-space:pre-wrap;overflow:auto;"
+       "height:calc(100vh - 42px)}</style></head>"
+       "<body><header><h1>" (html-escape role) "</h1></header>"
+       "<pre id=\"pane\">" (html-escape snapshot) "</pre></body></html>"))
+
+(defn agent-role [uri]
+  (when-let [[_ role] (re-matches #"/agent/([^/]+)"
+                                 (first (str/split (or uri "") #"\?")))]
+    (java.net.URLDecoder/decode role "UTF-8")))
+
+(defn get-agent [root uri]
+  (if-let [role (agent-role uri)]
+    {:status 200
+     :headers {"Content-Type" "text/html; charset=utf-8"}
+     :body (pane-page role (pane-content root role))}
+    {:status 404 :body "Not found"}))
+
 (defn handle-get [root uri]
   (cond
     (= "/" uri)
@@ -296,6 +426,9 @@
     {:status 200
      :headers {"Content-Type" "application/json"}
      :body (json/generate-string (dashboard-state root))}
+
+    (agent-role uri)
+    (get-agent root uri)
 
     (str/starts-with? (or uri "") "/doc")
     (get-doc root uri)
@@ -352,6 +485,12 @@
                   {:method "POST"
                    :uri (str "/api/approvals/" id "/" action)}))
 
+(defn test-pane! [root role]
+  (when (str/blank? role)
+    (exit! 1 "Missing role"))
+  (print (pane-content (require-root! root) role))
+  (flush))
+
 (defn -main [& args]
   (case (first args)
     "--test-state" (test-state! (second args))
@@ -362,6 +501,7 @@
     "--test-inject-argv" (test-inject-argv! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-approve" (test-approval! (second args) (nth args 2 nil) "approve")
     "--test-reject" (test-approval! (second args) (nth args 2 nil) "reject")
+    "--test-pane" (test-pane! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))
   (System/exit 0))

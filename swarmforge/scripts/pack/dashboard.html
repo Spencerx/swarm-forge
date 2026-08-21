@@ -209,14 +209,61 @@ function renderBoard(data) {
 
 function renderChrome(data) {
   const master = data.master_display || displayName(data.master_role);
+  const masterRole = data.master_role || "";
   $("pack-meta").replaceChildren();
   const dot = document.createElement("span");
   dot.className = "dot";
   dot.textContent = "●";
   $("pack-meta").append(dot, " live · master = " + master);
   $("btn-open-master").textContent = "Open " + master;
+  $("btn-open-master").setAttribute("data-open-agent", masterRole);
   $("btn-open-master-rail").textContent = "Open " + master;
+  $("btn-open-master-rail").setAttribute("data-open-agent", masterRole);
   $("master-title").textContent = master;
+}
+
+function age(iso) {
+  const then = Date.parse(iso || "");
+  if (Number.isNaN(then)) return "";
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (mins < 60) return mins + "m";
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return hours + "h";
+  return Math.round(hours / 24) + "d";
+}
+
+function openAgentWindow(url, name) {
+  window.open(url, name, "popup=yes,width=780,height=560");
+}
+
+function workRow(item) {
+  const tr = document.createElement("tr");
+  const task = document.createElement("td");
+  task.title = item.task || "";
+  task.textContent = item.task || "";
+  const role = document.createElement("td");
+  const link = document.createElement("button");
+  link.type = "button";
+  link.className = "linkish";
+  link.setAttribute("data-open-agent", item.role || "");
+  link.title = "open " + (item.role || "") + " session";
+  link.textContent = item.role || "";
+  role.appendChild(link);
+  const state = document.createElement("td");
+  const ico = document.createElement("span");
+  ico.className = "st-ico dot-green";
+  ico.title = "in process";
+  state.appendChild(ico);
+  const ageCell = document.createElement("td");
+  ageCell.textContent = age(item.updated_at);
+  tr.append(task, role, state, ageCell);
+  return tr;
+}
+
+function renderWork(data) {
+  const rows = $("work-rows");
+  rows.replaceChildren();
+  (data.work_in_flight || []).forEach((item) => rows.appendChild(workRow(item)));
 }
 
 function fileName(path) {
@@ -284,6 +331,7 @@ async function loadState() {
   renderChrome(data);
   renderBoard(data);
   renderAttention(data);
+  renderWork(data);
 }
 
 function closeNewTask() {
@@ -329,6 +377,12 @@ $("chat-input").addEventListener("keydown", (event) => {
     event.preventDefault();
     sendChat();
   }
+});
+document.addEventListener("click", (event) => {
+  const btn = event.target.closest("[data-open-agent]");
+  if (!btn) return;
+  const role = btn.getAttribute("data-open-agent");
+  if (role) openAgentWindow("/agent/" + encodeURIComponent(role), "agent-" + role);
 });
 loadState();
 </script>

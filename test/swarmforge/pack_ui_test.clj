@@ -136,6 +136,22 @@
   (handoff-names (fs/path (pack-worktree root roles role)
                           ".swarmforge/handoffs/inbox/new")))
 
+(defn in-process-dir [root roles role]
+  (fs/path (pack-worktree root roles role)
+           ".swarmforge/handoffs/inbox/in_process"))
+
+(defn put-in-process! [root roles role {:keys [from task filename]}]
+  (write-file
+   (fs/path (in-process-dir root roles role)
+            (or filename (str "50_from_" from "_to_" role ".handoff")))
+   (str "from: " from "\n"
+        "to: " role "\n"
+        "priority: 50\n"
+        "type: git_handoff\n"
+        "task: " task "\n"
+        "\n"
+        "payload\n")))
+
 (defn web-state [root]
   (json/parse-string (:out (pack-web root true "--test-state" (str root))) true))
 
@@ -538,6 +554,60 @@
     (is (re-find #"id=\"master-title\"" html))
     (is (re-find #"id=\"chat-input\"" html))
     (is (str/includes? html "/api/chat"))))
+
+(deftest pack-web-lists-in-process-work-in-flight
+  ;; Given in_process handoff for coder task cave-walk
+  ;; When pack_web --test-state
+  ;; Then work_in_flight includes task cave-walk role coder
+  (let [root (tmp-dir)
+        roles ["specifier" "coder"]]
+    (setup-pack! root roles)
+    (put-in-process! root roles "coder" {:from "specifier" :task "cave-walk"})
+    (let [wif (:work_in_flight (web-state root))
+          row (first wif)]
+      (is (= 1 (count wif)))
+      (is (= "cave-walk" (:task row)))
+      (is (= "coder" (:role row)))
+      (is (re-matches #"\d{4}-\d{2}-\d{2}T.*Z" (or (:updated_at row) ""))))))
+
+(deftest pack-web-lists-batch-in-process-in-work-in-flight
+  ;; Given a batch dir in coder in_process for task cave-walk
+  ;; When pack_web --test-state
+  ;; Then work_in_flight includes task cave-walk role coder
+  (let [root (tmp-dir)
+        roles ["specifier" "coder"]]
+    (setup-pack! root roles)
+    (put-in-process! root roles "coder"
+                     {:from "specifier"
+                      :task "cave-walk"
+                      :filename "batch_20260615T000001Z_000001/50_from_specifier_to_coder.handoff"})
+    (let [wif (:work_in_flight (web-state root))]
+      (is (some #(and (= "cave-walk" (:task %)) (= "coder" (:role %))) wif)))))
+
+(deftest pack-dashboard-html-has-work-queue-and-no-sl
+  ;; When serving dashboard.html
+  ;; Then Work Queue role links use data-open-agent
+  ;; And Open SL / sl-therm / merger are absent
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "Work Queue"))
+    (is (str/includes? html "data-open-agent"))
+    (is (str/includes? html "data.work_in_flight"))
+    (is (str/includes? html "/agent/"))
+    (is (not (str/includes? html "Open SL")))
+    (is (not (str/includes? html "sl-therm")))
+    (is (not (str/includes? html "merger")))))
+
+(deftest pack-web-test-pane-prints-recorded-pane
+  ;; Given a recorded pane.txt for coder task cave-walk
+  ;; When pack_web --test-pane
+  ;; Then it prints that text
+  (let [root (tmp-dir)
+        text "coder pane snapshot\n"]
+    (setup-pack! root ["specifier" "coder"])
+    (write-file (fs/path root ".swarmforge/sessions/coder/cave-walk/pane.txt") text)
+    (let [result (pack-web root false "--test-pane" (str root) "coder")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "coder pane snapshot")))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
