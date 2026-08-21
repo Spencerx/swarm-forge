@@ -1,8 +1,11 @@
 (ns swarmforge.pack-ui-test
   (:require [babashka.fs :as fs]
+            [cheshire.core :as json]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is run-tests use-fixtures]]))
+
+(def six-pack-roles ["specifier" "coder" "cleaner" "architect" "hardender" "QA"])
 
 (def repo-root (fs/cwd))
 (def scripts-dir (fs/path repo-root "swarmforge" "scripts"))
@@ -45,9 +48,15 @@
    (write-file
     (fs/path root ".swarmforge/roles.tsv")
     (apply str
-           (for [role roles]
-             (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\n"
-                     role role root role (str/capitalize role)))))
+           (map-indexed
+            (fn [i role]
+              (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\n"
+                      role
+                      (if (zero? i) "master" role)
+                      root
+                      role
+                      (str/capitalize role)))
+            roles)))
    (doseq [dir [".swarmforge/handoffs/outbox"
                 ".swarmforge/handoffs/sent"
                 ".swarmforge/handoffs/failed"
@@ -57,6 +66,10 @@
 (defn pack-board
   ([root ok? & args]
    (apply run {:dir root :ok? ok?} (script "pack_board.sh") args)))
+
+(defn pack-web
+  ([root ok? & args]
+   (apply run {:dir root :ok? ok?} (script "pack_web.sh") args)))
 
 (defn create-task
   ([root name lane] (create-task root name lane true))
@@ -208,6 +221,26 @@
       (is (= "done" (task-lane root "htw-console-app")))
       (finally
         (stop-tmux! sock)))))
+
+(deftest pack-web-exposes-dashboard-state-from-conf-and-board
+  ;; Given a six-pack with specifier as master and a board card
+  ;; When pack_web --test-state
+  ;; Then JSON includes lanes from conf, the master display name, and the card
+  (let [root (tmp-dir)
+        _ (setup-pack! root six-pack-roles)
+        _ (create-task root "htw-console-app" "specifier")
+        listed (:out (list-tasks root))
+        updated (nth (str/split (or (task-row listed "htw-console-app") "") #"\t") 3 nil)
+        result (pack-web root true "--test-state" (str root))
+        state (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (= "specifier" (:master_role state)))
+    (is (= "Specifier" (:master_display state)))
+    (is (= six-pack-roles (:lanes state)))
+    (is (= [{:name "htw-console-app" :lane "specifier" :updated_at updated}]
+           (:tasks state)))
+    (is (= [] (:approvals state)))
+    (is (= [] (:work_in_flight state)))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
