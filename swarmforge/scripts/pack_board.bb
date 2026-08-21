@@ -82,6 +82,15 @@
 (defn tasks-file [root]
   (fs/path (board-dir root) "tasks.tsv"))
 
+(defn task-body-file [root name]
+  (fs/path (board-dir root) (str name ".txt")))
+
+(defn write-body! [root name text]
+  (when (some? text)
+    (let [file (task-body-file root name)]
+      (fs/create-dirs (fs/parent file))
+      (spit (str file) text))))
+
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
            (java.time.Instant/now)))
@@ -122,13 +131,15 @@
 (defn create! [opts]
   (let [name (task-name opts)
         lane (task-lane opts)
-        file (tasks-file (resolve-root opts))]
+        root (resolve-root opts)
+        file (tasks-file root)]
     (require-value! name "task name")
     (require-value! lane "lane")
     (let [rows (read-rows file)]
       (when (find-task rows name)
         (exit! 1 (str "Duplicate task name: " name)))
-      (write-rows file (conj rows (task-row name lane (timestamp)))))))
+      (write-rows file (conj rows (task-row name lane (timestamp))))
+      (write-body! root name (:text opts)))))
 
 (defn rewrite-lane [line name lane]
   (let [[row-name _ created] (str/split line #"\t")]

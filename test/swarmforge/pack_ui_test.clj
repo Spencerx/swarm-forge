@@ -121,6 +121,26 @@
     (is (re-matches #"\d{4}-\d{2}-\d{2}T.*Z" (nth cols 2 "")))
     (is (= (nth cols 2 nil) (nth cols 3 nil)))))
 
+(deftest new-task-writes-the-card-and-body
+  ;; Given specifier is master
+  ;; When create name=htw-console-app text="Integrate HTW stories…"
+  ;; Then lane is specifier AND board/htw-console-app.txt has the text
+  (let [root (tmp-dir)
+        text "Integrate HTW stories…"]
+    (write-file
+     (fs/path root ".swarmforge/roles.tsv")
+     (str "specifier\tmaster\t" root "\tsession\tSpecifier\tcodex\ttask\n"))
+    (let [created (pack-board root true
+                              "create"
+                              "--root" (str root)
+                              "--name" "htw-console-app"
+                              "--lane" "specifier"
+                              "--text" text)
+          body (slurp (str (fs/path root ".swarmforge/board/htw-console-app.txt")))]
+      (is (zero? (:exit created)))
+      (is (= "specifier" (task-lane root "htw-console-app")))
+      (is (= text body)))))
+
 (deftest pack-board-lists-lanes-in-role-order
   ;; Given roles specifier, coder, QA
   ;; When pack_board lanes
