@@ -213,6 +213,33 @@
           (is (zero? (:exit result)))
           (is (str/includes? (str content) (str "commit: " wt-head "\n"))))))))
 
+(deftest swarm-handoff-rejects-drafts-outside-worktree-tmp
+  ;; Given a git_handoff draft
+  ;; When it lives in /tmp or the handoff outbox tmp
+  ;; Then swarm_handoff refuses it and asks for ./tmp/ in the worktree
+  (let [root (tmp-dir)
+        commit (init-repo! root)]
+    (setup-project! root)
+    (testing "rejects a draft in /tmp"
+      (let [draft (fs/path "/tmp" (str "swarmforge-bad-draft-" (System/currentTimeMillis) ".handoff"))]
+        (try
+          (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: scratch-tmp\ncommit: %s\n" commit))
+          (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                            (script "swarm_handoff.sh") (str draft))]
+            (is (= 1 (:exit result)))
+            (is (str/includes? (str (:err result) (:out result)) "./tmp/"))
+            (is (fs/exists? draft)))
+          (finally
+            (fs/delete-if-exists draft)))))
+    (testing "rejects a draft in the handoff outbox tmp"
+      (let [draft (fs/path root ".swarmforge/handoffs/outbox/tmp/htw-console-app-coder.draft")]
+        (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: outbox-scratch\ncommit: %s\n" commit))
+        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                          (script "swarm_handoff.sh") (str draft))]
+          (is (= 1 (:exit result)))
+          (is (str/includes? (str (:err result) (:out result)) "./tmp/"))
+          (is (fs/exists? draft)))))))
+
 (deftest swarm-handoff-validates-and-queues-git-handoffs
   (let [root (tmp-dir)
         commit (init-repo! root)]

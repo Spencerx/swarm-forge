@@ -25,8 +25,12 @@
 
 ## Acceptance Pipeline
 - Use github.com/unclebob/Acceptance-Pipeline-Specification for Gherkin acceptance tests.
-- The Acceptance Pipeline Specification supplies `gherkin-parser` and `gherkin-mutator`; install or build those commands from that repository instead of reimplementing them in the project.
-- Prefer the Babashka APS tools for `gherkin-parser`, `gherkin-mutator`, and related APS support commands.
+- The Acceptance Pipeline Specification supplies `gherkin-parser`, `ir-dry-checker`, and `gherkin-mutator`. Install them with the project-local helper; do not search `$HOME` or run `find` for binaries.
+- At Tool Startup, for each required APS tool, run `swarm_tool.sh require <tool>`. If it is missing, run exactly `swarm_tool.sh ensure <tool>`.
+- Two-arg forms:
+  - `gherkin-parser <feature> ./tmp/<stem>.json`
+  - `ir-dry-checker <ir> ./tmp/<stem>.dry.json`
+- Prefer the Babashka APS tools for `gherkin-parser`, `ir-dry-checker`, `gherkin-mutator`, and related APS support commands.
 - Use Go-based APS tools only if the Babashka APS tools do not work in the current project environment.
 - Project-specific acceptance pipeline components are the acceptance entrypoint generator, acceptance runtime, project step handlers, runner adapter, and convenience scripts.
 - Gherkin acceptance mutation means running `gherkin-mutator` to mutate Gherkin example values.

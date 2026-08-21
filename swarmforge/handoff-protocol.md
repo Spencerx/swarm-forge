@@ -226,6 +226,9 @@ Proposed usage:
 swarm_handoff.sh ./tmp/handoff.txt
 ```
 
+Drafts must live in `./tmp/` in the assigned worktree. `/tmp` and
+`.swarmforge/handoffs/outbox/tmp/` are not valid scratch.
+
 Responsibilities:
 
 - Read a draft handoff file.

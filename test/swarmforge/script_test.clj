@@ -253,6 +253,143 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest launch-command-puts-project-tool-bin-on-path
+  ;; Given a launched role
+  ;; When the start command is built
+  ;; Then `.swarmforge/bin` is on PATH so require/ensure wrappers are found
+  (let [root (tmp-dir)]
+    (try
+      (let [command (:out (run {:dir root}
+                               (script "swarmforge.bb")
+                               "--test-launch-command"
+                               (str root)
+                               "codex"))]
+        (is (str/includes? command (str ".swarmforge/bin':'"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-require-and-ensure-install-aps-wrappers
+  ;; Given a project without APS tools
+  ;; When require runs, it reports missing
+  ;; When ensure runs against a local APS source, wrappers land in .swarmforge/bin
+  (let [root (tmp-dir)
+        aps (fs/path root "aps-src")]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path aps "bb.edn") "{:tasks {gherkin-parser identity\n  gherkin-ir-dry-checker identity}}\n")
+      (let [missing (run {:dir root :ok? false}
+                         (script "swarm_tool.sh") "require" "gherkin-parser")]
+        (is (not= 0 (:exit missing)))
+        (is (str/includes? (:err missing) "MISSING: gherkin-parser")))
+      (run {:dir root
+            :env {"SWARMFORGE_TOOL_SRC" (str aps)
+                  "PATH" (System/getenv "PATH")
+                  "GIT_CONFIG_NOSYSTEM" "1"}}
+           (script "swarm_tool.sh") "ensure" "gherkin-parser")
+      (run {:dir root
+            :env {"SWARMFORGE_TOOL_SRC" (str aps)
+                  "PATH" (System/getenv "PATH")
+                  "GIT_CONFIG_NOSYSTEM" "1"}}
+           (script "swarm_tool.sh") "ensure" "ir-dry-checker")
+      (let [parser (fs/path root ".swarmforge/bin/gherkin-parser")
+            dry (fs/path root ".swarmforge/bin/ir-dry-checker")]
+        (is (fs/executable? parser))
+        (is (fs/executable? dry))
+        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "gherkin-parser"))))
+        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "ir-dry-checker")))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest specifier-instruction-file-names-aps-require-ensure-and-tmp-argv
+  ;; Given a specifier assignment
+  ;; When SwarmForge writes the instruction file
+  ;; Then Tool Startup names require/ensure and the two-arg parse/dry-check
+  ;; forms into ./tmp/, and does not send the agent hunting under $HOME
+  (let [root (tmp-dir)]
+    (try
+      (let [result (run {:dir root}
+                        (script "swarmforge.bb")
+                        "--test-instruction-file"
+                        (str root)
+                        "specifier")
+            prompt (str/trim (:out result))
+            path (fs/path root ".swarmforge/prompts/specifier.md")]
+        (is (fs/exists? path))
+        (is (str/includes? prompt "## Tool Startup"))
+        (is (str/includes? prompt "swarm_tool.sh require gherkin-parser"))
+        (is (str/includes? prompt "swarm_tool.sh ensure gherkin-parser"))
+        (is (str/includes? prompt "swarm_tool.sh require ir-dry-checker"))
+        (is (str/includes? prompt "swarm_tool.sh ensure ir-dry-checker"))
+        (is (str/includes? prompt "gherkin-parser <feature> ./tmp/"))
+        (is (str/includes? prompt "ir-dry-checker <ir> ./tmp/"))
+        (is (str/includes? prompt "./tmp/")
+            "parse, dry-check, and drafts belong in ./tmp/")
+        (is (str/includes? prompt "/tmp")
+            "must say not to use /tmp")
+        (is (str/includes? prompt "outbox/tmp")
+            "must say not to use the handoff outbox as scratch")
+        (is (str/includes? prompt "$HOME")
+            "must say not to search $HOME"))
+      (finally
+        (fs/delete-tree root)))))
+
+(defn commit-body [root]
+  (:out (run {:dir root} "git" "log" "-1" "--format=%B")))
+
+(deftest commit-msg-hook-adds-missing-role-byline
+  ;; Given a specifier commit whose message has no byline
+  ;; When the commit-msg hook runs
+  ;; Then it appends `By specifier.` and does not duplicate an existing byline
+  (let [root (tmp-dir)]
+    (try
+      (init-repo! root)
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (run {:dir root}
+           (script "swarmforge.bb")
+           "--test-install-hooks"
+           (str root))
+      (write-file (fs/path root "spec.md") "hunt\n")
+      (run {:dir root} "git" "add" "spec.md")
+      (run {:dir root :env {"SWARMFORGE_ROLE" "specifier"
+                            "PATH" (System/getenv "PATH")
+                            "GIT_CONFIG_NOSYSTEM" "1"}}
+           "git" "commit" "-q" "-m" "Specify Hunt the Wumpus console app")
+      (let [body (commit-body root)]
+        (is (str/includes? body "Specify Hunt the Wumpus console app"))
+        (is (str/includes? body "By specifier."))
+        (is (= 1 (count (re-seq #"By specifier\." body)))))
+      (write-file (fs/path root "spec.md") "hunt two\n")
+      (run {:dir root} "git" "add" "spec.md")
+      (run {:dir root :env {"SWARMFORGE_ROLE" "specifier"
+                            "PATH" (System/getenv "PATH")
+                            "GIT_CONFIG_NOSYSTEM" "1"}}
+           "git" "commit" "-q" "-m" "Add a scenario\n\nBy specifier.")
+      (is (= 1 (count (re-seq #"By specifier\." (commit-body root)))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest commit-msg-hook-infers-role-from-worktree
+  ;; Given SWARMFORGE_ROLE is unset and roles.tsv maps this worktree to specifier
+  ;; When a commit is made
+  ;; Then the hook still adds `By specifier.`
+  (let [root (tmp-dir)]
+    (try
+      (init-repo! root)
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (run {:dir root}
+           (script "swarmforge.bb")
+           "--test-install-hooks"
+           (str root))
+      (write-file (fs/path root "spec.md") "hunt\n")
+      (run {:dir root} "git" "add" "spec.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Specify Hunt the Wumpus console app")
+      (is (str/includes? (commit-body root) "By specifier."))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest window-watchdog-rewrites-window-state-and-id-list
   (let [root (tmp-dir)
         state-file (fs/path root "windows.tsv")

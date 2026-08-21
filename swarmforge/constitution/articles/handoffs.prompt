@@ -1,7 +1,8 @@
 # Handoff Rules
 
 ## Sending Handoffs
-- Write a draft handoff file with only structured headers, then run `swarm_handoff.sh <draft-file>`.
+- Write a draft handoff file with only structured headers under `./tmp/` in the assigned worktree, then run `swarm_handoff.sh <draft-file>`.
+- `swarm_handoff.sh` rejects drafts in `/tmp` and `.swarmforge/handoffs/outbox/tmp/`.
 - `swarm_handoff.sh --help` prints usage. Do not pass `--help` as a draft path.
 - Use only these message types:
   - `git_handoff`

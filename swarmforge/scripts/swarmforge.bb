@@ -216,6 +216,8 @@
 
 (def required-helpers
   ["handoff_lib.bb" "swarm_handoff.sh" "swarm_handoff.bb"
+   "swarm_tool.sh" "swarm_tool.bb"
+   "commit-msg-hook.sh" "commit-msg-hook.bb"
    "merge_and_process.sh" "merge_and_process.bb"
    "ready_for_next.sh" "ready_for_next.bb"
    "done_with_current.sh" "done_with_current.bb"
@@ -239,6 +241,24 @@
     (let [path (fs/path (:script-dir ctx) "terminal-adapters" helper)]
       (when-not (and (fs/exists? path) (fs/executable? path))
         (fail! (str red "Error:" reset " Required terminal adapter not found or not executable: " path))))))
+
+(defn git-hooks-dir [ctx]
+  (let [path (sh-out "git" "-C" (str (:working-dir ctx)) "rev-parse" "--git-path" "hooks")
+        dir (fs/path path)]
+    (if (fs/absolute? dir)
+      dir
+      (fs/path (:working-dir ctx) dir))))
+
+(defn install-commit-msg-hook! [ctx]
+  (let [dir (git-hooks-dir ctx)
+        hook (fs/path dir "commit-msg")
+        bb (str (fs/absolutize (fs/path (:script-dir ctx) "commit-msg-hook.bb")))]
+    (fs/create-dirs dir)
+    (spit (str hook)
+          (str "#!/usr/bin/env zsh\n"
+               "set -euo pipefail\n"
+               "exec bb " (sq bb) " \"$@\"\n"))
+    (fs/set-posix-file-permissions hook "rwxr-xr-x")))
 
 (defn prepare-workspace! [ctx]
   (doseq [dir [(:state-dir ctx) (:notify-dir ctx) (:prompts-dir ctx)
@@ -299,10 +319,46 @@
   (sh "tmux" "-S" (:tmux-socket ctx) "rename-window" "-t" (str session ":" agent-window) title)
   (sh "tmux" "-S" (:tmux-socket ctx) "set-window-option" "-t" (str session ":" title) "allow-rename" "off"))
 
+(def aps-tool-purpose
+  {"gherkin-parser" "APS parsing"
+   "ir-dry-checker" "IR DRY"
+   "gherkin-mutator" "Gherkin mutation"})
+
+(def role-required-tools
+  {"specifier" ["gherkin-parser" "ir-dry-checker"]
+   "coder" ["gherkin-parser"]
+   "refactorer" ["gherkin-parser"]
+   "hardender" ["gherkin-parser" "gherkin-mutator"]
+   "architect" ["gherkin-parser" "gherkin-mutator"]
+   "QA" ["gherkin-parser"]})
+
+(defn require-ensure-lines [tools]
+  (apply str
+         (for [tool tools]
+           (str "- `" tool "` (" (get aps-tool-purpose tool) "): `swarm_tool.sh require " tool "`\n"
+                "  If missing, run exactly: `swarm_tool.sh ensure " tool "`\n"))))
+
+(defn parse-dry-check-lines [tools]
+  (str (when (some #{"gherkin-parser"} tools)
+         "- Parse with the two-arg form: `gherkin-parser <feature> ./tmp/<stem>.json`\n")
+       (when (some #{"ir-dry-checker"} tools)
+         "- Dry-check with the two-arg form: `ir-dry-checker <ir> ./tmp/<stem>.dry.json`\n")))
+
+(defn tool-startup-section [role]
+  (let [tools (get role-required-tools role [])]
+    (str "## Tool Startup\n\n"
+         "- Do not search `$HOME` or run `find` for APS tools.\n"
+         (require-ensure-lines tools)
+         (parse-dry-check-lines tools)
+         "- Write scratch files and handoff drafts in `./tmp/` in the assigned worktree.\n"
+         "- Do not use `/tmp` or `.swarmforge/handoffs/outbox/tmp/` as scratch.\n")))
+
 (defn write-agent-instruction-file! [role prompt-file]
   (spit (str prompt-file)
         (str "Read swarmforge/constitution.prompt, then read every file it refers to recursively, and obey all of those instructions.\n"
-             "Read swarmforge/roles/" role ".prompt, then read every file it refers to recursively, and follow all of those instructions.\n")))
+             "Read swarmforge/roles/" role ".prompt, then read every file it refers to recursively, and follow all of those instructions.\n"
+             "\n"
+             (tool-startup-section role))))
 
 (defn extra-args-prefix [row]
   (let [args (:extra-args row)]
@@ -330,8 +386,9 @@
                           (:script-dir ctx)
                           (fs/path role-worktree "swarmforge" "scripts"))
         prompt-file (fs/path (:prompts-dir ctx) (str role ".md"))
+        tool-bin (fs/path (:working-dir ctx) ".swarmforge" "bin")
         base (str "export SWARMFORGE_ROLE=" (sq role)
-                  " && export PATH=" (sq (str role-script-dir)) ":$PATH"
+                  " && export PATH=" (sq (str tool-bin)) ":" (sq (str role-script-dir)) ":$PATH"
                   " && cd " (sq (str role-worktree))
                   " && ")]
     (write-agent-instruction-file! role prompt-file)
@@ -511,6 +568,7 @@
                 detect-tmux-base-indexes)]
     (initialize-git-repo! ctx)
     (ensure-runtime-git-excludes! ctx)
+    (install-commit-msg-hook! ctx)
     (let [ctx (prepare-ctx ctx)]
       (check-backend-dependencies! ctx)
       (prepare-workspace! ctx)
@@ -574,6 +632,18 @@
     (fs/create-dirs (:prompts-dir ctx))
     (println (launch-command ctx 1 row))))
 
+(defn test-instruction-file! [root role]
+  (let [ctx (assoc (context root) :terminal-backend "none")
+        prompt-file (fs/path (:prompts-dir ctx) (str role ".md"))]
+    (fs/create-dirs (:prompts-dir ctx))
+    (write-agent-instruction-file! role prompt-file)
+    (print (slurp (str prompt-file)))))
+
+(defn test-install-hooks! [root]
+  (let [ctx (context root)]
+    (install-commit-msg-hook! ctx)
+    (println (str (fs/path (git-hooks-dir ctx) "commit-msg")))))
+
 (defn test-sleep-inhibitor-prefix! []
   (println (str/join " " (or (sleep-inhibitor-prefix) []))))
 
@@ -584,6 +654,8 @@
     "--test-launch-command" (apply test-launch-command!
                                      (or (second args) (System/getProperty "user.dir"))
                                      (drop 2 args))
+    "--test-instruction-file" (test-instruction-file! (second args) (nth args 2))
+    "--test-install-hooks" (test-install-hooks! (second args))
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
     "--test-tmux-base-indexes" (test-tmux-base-indexes! (second args))

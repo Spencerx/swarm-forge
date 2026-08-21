@@ -9,6 +9,8 @@
   (str "Usage:\n"
        "  swarm_handoff.sh <draft-file>\n"
        "  swarm_handoff.sh --help\n\n"
+       "Write the draft under ./tmp/ in the assigned worktree.\n"
+       "Do not use /tmp or the handoff outbox as scratch.\n\n"
        "Draft formats:\n\n"
        "type: git_handoff\n"
        "to: <role>[,<role>...]\n"
@@ -111,6 +113,20 @@
     (when-not (zero? (:exit result))
       (exit! 1 "Cannot read HEAD commit."))
     (str/trim (:out result))))
+
+(defn under-dir? [file dir]
+  (let [file (str (fs/canonicalize file))
+        dir (str (fs/canonicalize dir))]
+    (str/starts-with? file (str dir "/"))))
+
+(defn worktree-tmp []
+  (let [dir (fs/path (git-cwd) "tmp")]
+    (fs/create-dirs dir)
+    dir))
+
+(defn require-worktree-tmp-draft! [draft]
+  (when-not (under-dir? draft (worktree-tmp))
+    (exit! 1 (str "Draft must live in ./tmp/ in the assigned worktree; got " draft))))
 
 (defn commit-on-sender-branch? [sha]
   (zero? (:exit (command (git-cwd) "git" "merge-base" "--is-ancestor" sha "HEAD"))))
@@ -377,6 +393,7 @@
     (let [sender (sender-role)]
       (when-not (role-known? sender)
         (exit! 1 (str "Unknown sender role: " sender)))
+      (require-worktree-tmp-draft! draft)
       (let [{:keys [headers ordered errors]} (parse-draft draft)
             headers (cond-> headers
                       (= "git_handoff" (get headers "type"))
