@@ -158,6 +158,40 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarmforge-required-helpers-include-pack-scripts
+  ;; Given the launcher required-helpers list
+  ;; When --test-required-helpers
+  ;; Then pack_web.sh and pack_board.sh are listed
+  (let [result (run {:dir repo-root} (script "swarmforge.bb") "--test-required-helpers")
+        names (set (str/split-lines (str/trim (:out result))))]
+    (is (contains? names "pack_web.sh"))
+    (is (contains? names "pack_board.sh"))))
+
+(defn write-pack-conf! [root conf]
+  (write-file (fs/path root "swarmforge/constitution.prompt") "Read articles.\n")
+  (write-file (fs/path root "swarmforge/swarmforge.conf") conf)
+  (write-file (fs/path root "swarmforge/roles/specifier.prompt") "specifier\n")
+  (write-file (fs/path root "swarmforge/roles/coder.prompt") "coder\n"))
+
+(deftest swarmforge-launch-plan-starts-pack-web-and-skips-invisible-terminals
+  ;; Given window-invisible specifier and a visible coder window
+  ;; When --test-launch-plan
+  ;; Then pack_web starts, specifier skips Terminal, and coder still opens Terminal
+  (let [root (tmp-dir)]
+    (try
+      (write-pack-conf! root
+                        (str "window-invisible specifier codex master\n"
+                             "window coder codex coder\n"))
+      (let [out (:out (run {:dir root} (script "swarmforge.bb")
+                           "--test-launch-plan" (str root)))]
+        (is (str/includes? out "pack_web start"))
+        (is (str/includes? out "skip-terminal specifier"))
+        (is (str/includes? out "open-terminal coder"))
+        (is (not (str/includes? out "skip-terminal coder")))
+        (is (not (str/includes? out "open-terminal specifier"))))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest swarmforge-fails-without-a-master-worktree
   ;; Given only window coder codex coder
   ;; When --test-parse

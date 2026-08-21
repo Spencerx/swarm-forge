@@ -4,12 +4,14 @@
   (:require [babashka.fs :as fs]
             [cheshire.core :as json]
             [clojure.java.shell :refer [sh]]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [org.httpkit.server :as http]))
 
 (def script-dir (fs/parent *file*))
 
 (def usage-text
   (str "Usage:\n"
+       "  pack_web.sh --serve <root> [port]\n"
        "  pack_web.sh --test-state <root>\n"
        "  pack_web.sh --test-html\n"
        "  pack_web.sh --test-post-task <root> <name> <text>\n"
@@ -491,8 +493,44 @@
   (print (pane-content (require-root! root) role))
   (flush))
 
+(defn request-body [req]
+  (when-let [body (:body req)]
+    (if (string? body) body (slurp body))))
+
+(defn request-uri [req]
+  (let [uri (:uri req)
+        qs (:query-string req)]
+    (if (str/blank? qs) uri (str uri "?" qs))))
+
+(defn http-handler [root]
+  (fn [req]
+    (handle-request root {:method (str/upper-case (name (:request-method req)))
+                          :uri (request-uri req)
+                          :body (request-body req)})))
+
+(defn write-dashboard-url! [root url]
+  (let [file (fs/path root ".swarmforge" "dashboard-url")]
+    (fs/create-dirs (fs/parent file))
+    (spit (str file) (str url "\n"))))
+
+(defn parse-port [port-str]
+  (if (str/blank? port-str) 0 (Long/parseLong port-str)))
+
+(defn serve! [root port-str]
+  (let [root (require-root! root)
+        server (http/run-server (http-handler root)
+                                {:ip "127.0.0.1"
+                                 :port (parse-port port-str)
+                                 :legacy-return-value? false})
+        url (str "http://127.0.0.1:" (http/server-port server))]
+    (write-dashboard-url! root url)
+    (println url)
+    (flush)
+    @(promise)))
+
 (defn -main [& args]
   (case (first args)
+    "--serve" (serve! (second args) (nth args 2 nil))
     "--test-state" (test-state! (second args))
     "--test-html" (test-html!)
     "--test-post-task" (test-post-task! (second args) (nth args 2 nil) (nth args 3 nil))

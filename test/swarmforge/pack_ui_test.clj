@@ -667,6 +667,37 @@
       (is (zero? (:exit result)))
       (is (= "pane\n" (slurp (str (pane-path root "coder" "htw-console-app"))))))))
 
+(defn wait-file [path timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (fs/exists? path) true
+        (> (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep 50) (recur))))))
+
+(deftest pack-web-serve-writes-dashboard-url-and-binds-localhost
+  ;; Given a pack root
+  ;; When pack_web --serve <root>
+  ;; Then dashboard-url is a localhost URL and GET / serves the dashboard
+  (let [root (tmp-dir)
+        url-file (fs/path root ".swarmforge/dashboard-url")
+        pb (doto (java.lang.ProcessBuilder. [(script "pack_web.sh") "--serve" (str root)])
+             (.directory (java.io.File. (str root))))
+        _ (doto (.environment pb)
+            (.put "PATH" (System/getenv "PATH"))
+            (.put "GIT_CONFIG_NOSYSTEM" "1"))
+        proc (.start pb)]
+    (try
+      (is (wait-file url-file 5000) "dashboard-url was written")
+      (when (fs/exists? url-file)
+        (let [url (str/trim (slurp (str url-file)))
+              html (slurp url)]
+          (is (re-find #"^http://127\.0\.0\.1:\d+$" url))
+          (is (str/includes? html "New Task"))))
+      (finally
+        (.destroyForcibly proc)
+        (.waitFor proc)))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
     (System/exit (+ fail error))))

@@ -259,7 +259,9 @@
    "done_with_current_batch.sh" "done_with_current_batch.bb"
    "handoffd.bb" "stop_handoff_daemon.bb" "stop_handoff_daemon.sh"
    "swarm-cleanup.sh" "swarm-window-watchdog.sh" "swarm-window-watchdog.bb"
-   "swarm-terminal-adapter.sh" "swarmforge.sh" "swarmforge.bb"])
+   "swarm-terminal-adapter.sh" "swarmforge.sh" "swarmforge.bb"
+   "pack_board.sh" "pack_board.bb"
+   "pack_web.sh" "pack_web.bb"])
 
 (def terminal-helpers
   ["terminal-app.sh" "iterm2.sh" "ghostty.sh" "windows-terminal.sh" "none.sh"])
@@ -507,40 +509,115 @@
 (defn terminal-call-out [ctx command & args]
   (str/trim (:out (apply terminal-call ctx command args))))
 
-(defn open-terminal-surfaces! [ctx]
-  (if (terminal-call-ok? ctx "terminal_backend_can_open_sessions")
-    (do
-      (println (str "Opening separate " (terminal-call-out ctx "terminal_backend_label") " surfaces for each session..."))
+(defn skip-terminal? [row]
+  (not (:visible? row)))
+
+(defn record-window! [ctx index window-id row]
+  (spit (str (:window-ids-file ctx)) (str window-id "\n") :append true)
+  (spit (str (:window-state-file ctx))
+        (format "%d\t%s\t%s\t%s\n"
+                (inc index) window-id (:session row)
+                (str "SwarmForge " (:display-name row)))
+        :append true))
+
+(defn open-one-session! [ctx row previous-window-id]
+  (terminal-call-out ctx "terminal_open_session"
+                     (:session row)
+                     (str "SwarmForge " (:display-name row))
+                     previous-window-id))
+
+(defn open-role-terminal! [ctx row previous-window-id index]
+  (if (skip-terminal? row)
+    previous-window-id
+    (let [window-id (open-one-session! ctx row previous-window-id)]
       (when (terminal-call-ok? ctx "terminal_backend_tracks_windows")
-        (spit (str (:window-ids-file ctx)) "")
-        (spit (str (:window-state-file ctx)) ""))
-      (loop [rows (:roles ctx)
-             index 0
-             previous-window-id ""]
-        (when-let [row (first rows)]
-          (let [window-id (terminal-call-out ctx "terminal_open_session" (:session row) (str "SwarmForge " (:display-name row)) previous-window-id)]
-            (if (terminal-call-ok? ctx "terminal_backend_tracks_windows")
-              (do
-                (spit (str (:window-ids-file ctx)) (str window-id "\n") :append true)
-                (spit (str (:window-state-file ctx))
-                      (format "%d\t%s\t%s\t%s\n" (inc index) window-id (:session row) (str "SwarmForge " (:display-name row)))
-                      :append true)
-                (recur (next rows) (inc index) window-id))
-              (recur (next rows) (inc index) previous-window-id)))))
-      (if (terminal-call-ok? ctx "terminal_backend_tracks_windows")
-        (process/process [(str (fs/path (:script-dir ctx) "swarm-window-watchdog.sh"))
-                          (str (:window-state-file ctx))
-                          (str (:window-ids-file ctx))
-                          "1"
-                          (:tmux-socket ctx)
-                          (str (:working-dir ctx))
-                          (:terminal-backend ctx)]
-                         {:out (str (:window-watchdog-log ctx))
-                          :err :out})
-        (println (str yellow (terminal-call-out ctx "terminal_backend_label") " surfaces are not trackable; window watchdog is disabled for this backend." reset))))
-    (do
-      (println (str yellow "No terminal backend found; attaching current shell to '" (-> ctx :roles first :session) "' instead." reset))
-      (sh "tmux" "-S" (:tmux-socket ctx) "attach-session" "-t" (-> ctx :roles first :session)))))
+        (record-window! ctx index window-id row))
+      window-id)))
+
+(defn start-window-watchdog! [ctx]
+  (process/process [(str (fs/path (:script-dir ctx) "swarm-window-watchdog.sh"))
+                    (str (:window-state-file ctx))
+                    (str (:window-ids-file ctx))
+                    "1"
+                    (:tmux-socket ctx)
+                    (str (:working-dir ctx))
+                    (:terminal-backend ctx)]
+                   {:out (str (:window-watchdog-log ctx))
+                    :err :out}))
+
+(defn open-sessions-in-terminals! [ctx]
+  (println (str "Opening separate " (terminal-call-out ctx "terminal_backend_label") " surfaces for each session..."))
+  (when (terminal-call-ok? ctx "terminal_backend_tracks_windows")
+    (spit (str (:window-ids-file ctx)) "")
+    (spit (str (:window-state-file ctx)) ""))
+  (loop [rows (:roles ctx)
+         index 0
+         previous-window-id ""]
+    (when-let [row (first rows)]
+      (let [window-id (open-role-terminal! ctx row previous-window-id index)]
+        (if (terminal-call-ok? ctx "terminal_backend_tracks_windows")
+          (recur (next rows) (inc index) window-id)
+          (recur (next rows) (inc index) previous-window-id)))))
+  (if (terminal-call-ok? ctx "terminal_backend_tracks_windows")
+    (start-window-watchdog! ctx)
+    (println (str yellow (terminal-call-out ctx "terminal_backend_label")
+                  " surfaces are not trackable; window watchdog is disabled for this backend." reset))))
+
+(defn attach-fallback! [ctx]
+  (let [row (or (first (remove skip-terminal? (:roles ctx)))
+                (first (:roles ctx)))]
+    (println (str yellow "No terminal backend found; attaching current shell to '"
+                  (:session row) "' instead." reset))
+    (sh "tmux" "-S" (:tmux-socket ctx) "attach-session" "-t" (:session row))))
+
+(defn open-terminal-surfaces! [ctx]
+  (cond
+    (every? skip-terminal? (:roles ctx))
+    (println (str yellow "No visible Terminal surfaces; use the dashboard." reset))
+
+    (terminal-call-ok? ctx "terminal_backend_can_open_sessions")
+    (open-sessions-in-terminals! ctx)
+
+    :else
+    (attach-fallback! ctx)))
+
+(defn terminal-plan-line [row]
+  (if (skip-terminal? row)
+    (str "skip-terminal " (:role row))
+    (str "open-terminal " (:role row))))
+
+(defn launch-plan-lines [ctx]
+  (cons "pack_web start" (map terminal-plan-line (:roles ctx))))
+
+(defn wait-for-file [path timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (fs/exists? path) true
+        (> (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep 50) (recur))))))
+
+(defn dashboard-url-file [ctx]
+  (fs/path (:state-dir ctx) "dashboard-url"))
+
+(defn open-browser? []
+  (not= "0" (System/getenv "SWARMFORGE_OPEN_BROWSER")))
+
+(defn maybe-open-browser! [url]
+  (when (and (open-browser?) (command-exists? "open"))
+    (process/sh {:continue true} "open" url)))
+
+(defn start-pack-web! [ctx]
+  (let [script (str (fs/path (:script-dir ctx) "pack_web.sh"))
+        log (fs/path (:state-dir ctx) "dashboard.log")]
+    (process/process [script "--serve" (str (:working-dir ctx))]
+                     {:out (str log) :err :out})
+    (when-not (wait-for-file (dashboard-url-file ctx) 5000)
+      (fail! (str red "Error:" reset " Dashboard did not start.")))
+    (let [url (str/trim (slurp (str (dashboard-url-file ctx))))]
+      (println (str green "Dashboard: " url reset))
+      (maybe-open-browser! url)
+      url)))
 
 (defn context [working-dir]
   (let [working-dir (fs/absolutize (fs/path working-dir))
@@ -596,6 +673,14 @@
     (print (slurp (str (:roles-file ctx))))
     (print (slurp (str (:sessions-file ctx))))))
 
+(defn test-required-helpers! []
+  (doseq [helper required-helpers]
+    (println helper)))
+
+(defn test-launch-plan! [root]
+  (doseq [line (launch-plan-lines (prepare-ctx (context root)))]
+    (println line)))
+
 (defn run-main! [root]
   (check-dependency! "tmux")
   (check-dependency! "git")
@@ -642,6 +727,7 @@
         (println (str green "Tip: Write a handoff draft and run swarm_handoff.sh while the swarm is running." reset))
         (println (str green "Tip: Reattach manually with 'tmux -S " (:tmux-socket ctx) " attach-session -t <session-name>' if needed." reset))
         (println)
+        (start-pack-web! ctx)
         (open-terminal-surfaces! ctx)))))
 
 (defn test-terminal-bridge! [root backend]
@@ -686,6 +772,8 @@
 (defn -main [& args]
   (case (first args)
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
+    "--test-required-helpers" (test-required-helpers!)
+    "--test-launch-plan" (test-launch-plan! (or (second args) (System/getProperty "user.dir")))
     "--test-terminal-bridge" (test-terminal-bridge! (or (second args) (System/getProperty "user.dir")) (nth args 2))
     "--test-launch-command" (apply test-launch-command!
                                      (or (second args) (System/getProperty "user.dir"))
