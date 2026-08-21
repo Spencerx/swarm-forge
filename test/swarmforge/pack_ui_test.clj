@@ -42,6 +42,11 @@
   (fs/create-dirs (fs/parent path))
   (spit (str path) text))
 
+(defn pack-worktree [root roles role]
+  (if (= role (first roles))
+    (str root)
+    (str (fs/path root ".worktrees" role))))
+
 (defn setup-pack!
   ([root] (setup-pack! root ["specifier"]))
   ([root roles]
@@ -53,15 +58,17 @@
               (format "%s\t%s\t%s\t%s\t%s\tcodex\ttask\n"
                       role
                       (if (zero? i) "master" role)
-                      root
+                      (pack-worktree root roles role)
                       role
                       (str/capitalize role)))
             roles)))
-   (doseq [dir [".swarmforge/handoffs/outbox"
+   (doseq [role roles
+           dir [".swarmforge/handoffs/outbox"
                 ".swarmforge/handoffs/sent"
                 ".swarmforge/handoffs/failed"
                 ".swarmforge/handoffs/inbox/new"]]
-     (fs/create-dirs (fs/path root dir)))))
+     (fs/create-dirs (fs/path (pack-worktree root roles role) dir)))
+   (fs/create-dirs (fs/path root ".swarmforge/handoffs/pending_approval"))))
 
 (defn pack-board
   ([root ok? & args]
@@ -92,7 +99,7 @@
   (let [cols (str/split (or (task-row (:out (list-tasks root)) name) "") #"\t")]
     (nth cols 1 nil)))
 
-(defn queue-handoff! [root {:keys [from to task]}]
+(defn queue-handoff! [root {:keys [from to task artifacts]}]
   (write-file
    (fs/path root ".swarmforge/handoffs/outbox"
             (str "50_from_" from "_to_" (str/replace to #"," "_") ".handoff"))
@@ -101,8 +108,26 @@
         "priority: 50\n"
         "type: git_handoff\n"
         "task: " task "\n"
+        (when artifacts (str "artifacts: " artifacts "\n"))
         "\n"
         "payload\n")))
+
+(defn handoff-names [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(str/ends-with? (fs/file-name %) ".handoff"))
+         (mapv #(fs/file-name %)))
+    []))
+
+(defn pending-names [root]
+  (handoff-names (fs/path root ".swarmforge/handoffs/pending_approval")))
+
+(defn inbox-names [root roles role]
+  (handoff-names (fs/path (pack-worktree root roles role)
+                          ".swarmforge/handoffs/inbox/new")))
+
+(defn web-state [root]
+  (json/parse-string (:out (pack-web root true "--test-state" (str root))) true))
 
 (defn start-tmux! [root sessions]
   (let [sock (str (fs/path root "tmux.sock"))]
@@ -190,18 +215,18 @@
     (is (= before after))))
 
 (deftest handoffd-moves-the-task-card-to-the-recipient
-  ;; Given card htw-console-app in specifier
-  ;; When a git_handoff specifier→coder for that task is delivered
-  ;; Then the card lane is coder
+  ;; Given card htw-console-app in coder
+  ;; When a git_handoff coder→cleaner for that task is delivered
+  ;; Then the card lane is cleaner
   (let [root (tmp-dir)
-        roles ["specifier" "coder"]
+        roles ["specifier" "coder" "cleaner"]
         sock (do (setup-pack! root roles)
-                 (create-task root "htw-console-app" "specifier")
-                 (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"})
+                 (create-task root "htw-console-app" "coder")
+                 (queue-handoff! root {:from "coder" :to "cleaner" :task "htw-console-app"})
                  (start-tmux! root roles))]
     (try
       (handoffd-once root)
-      (is (= "coder" (task-lane root "htw-console-app")))
+      (is (= "cleaner" (task-lane root "htw-console-app")))
       (finally
         (stop-tmux! sock)))))
 
@@ -285,6 +310,104 @@
       (is (zero? (:exit result)))
       (is (= "coder" (task-lane root "htw-console-app")))
       (is (= text body)))))
+
+(deftest specifier-git-handoff-waits-for-attention
+  ;; Given six-pack-shaped roles + card in specifier
+  ;; When specifier→coder is queued and handoffd --once
+  ;; Then file is in pending_approval, coder inbox empty, pack_web --test-state approvals has the task
+  (let [root (tmp-dir)
+        artifacts "features/console.feature,qa/console.md"
+        sock (do (setup-pack! root six-pack-roles)
+                 (create-task root "htw-console-app" "specifier")
+                 (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"
+                                       :artifacts artifacts})
+                 (start-tmux! root six-pack-roles))]
+    (try
+      (handoffd-once root)
+      (let [state (web-state root)]
+        (is (= ["50_from_specifier_to_coder.handoff"] (pending-names root)))
+        (is (= [] (inbox-names root six-pack-roles "coder")))
+        (is (= "specifier" (task-lane root "htw-console-app")))
+        (is (= [{:id "50_from_specifier_to_coder"
+                 :gate "spec → coder"
+                 :task "htw-console-app"
+                 :artifacts ["features/console.feature" "qa/console.md"]}]
+               (:approvals state))))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest two-pack-git-handoff-does-not-wait
+  ;; Given coder master, cleaner next, no specifier
+  ;; When coder→cleaner queued + --once
+  ;; Then delivered to cleaner; approvals empty
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "htw-console-app" "coder")
+                 (queue-handoff! root {:from "coder" :to "cleaner" :task "htw-console-app"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (seq (inbox-names root roles "cleaner")))
+      (is (= [] (pending-names root)))
+      (is (= "cleaner" (task-lane root "htw-console-app")))
+      (is (= [] (:approvals (web-state root))))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest attention-approve-delivers-the-handoff
+  ;; Given pending approval
+  ;; When pack_web --test-approve <root> <id>
+  ;; Then coder inbox has the file, card lane coder (handoffd --once after approve)
+  (let [root (tmp-dir)
+        sock (do (setup-pack! root six-pack-roles)
+                 (create-task root "htw-console-app" "specifier")
+                 (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"
+                                       :artifacts "features/console.feature"})
+                 (start-tmux! root six-pack-roles))]
+    (try
+      (handoffd-once root)
+      (let [id (:id (first (:approvals (web-state root))))]
+        (pack-web root true "--test-approve" (str root) id)
+        (handoffd-once root)
+        (is (seq (inbox-names root six-pack-roles "coder")))
+        (is (= "coder" (task-lane root "htw-console-app")))
+        (is (= [] (pending-names root)))
+        (is (= [] (:approvals (web-state root)))))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest attention-reject-returns-to-master
+  ;; Given pending
+  ;; When --test-reject
+  ;; Then pending gone, card stays specifier
+  (let [root (tmp-dir)
+        sock (do (setup-pack! root six-pack-roles)
+                 (create-task root "htw-console-app" "specifier")
+                 (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"})
+                 (start-tmux! root six-pack-roles))]
+    (try
+      (handoffd-once root)
+      (let [id (:id (first (:approvals (web-state root))))]
+        (pack-web root true "--test-reject" (str root) id)
+        (is (= [] (pending-names root)))
+        (is (= [] (inbox-names root six-pack-roles "coder")))
+        (is (= "specifier" (task-lane root "htw-console-app")))
+        (is (= [] (:approvals (web-state root))))
+        (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest pack-dashboard-renders-attention-approvals
+  ;; Given dashboard HTML
+  ;; Then it renders data.approvals with View document, Approve, and Reject
+  (let [html (dashboard-html (tmp-dir))]
+    (is (re-find #"id=\"attention-rows\"" html))
+    (is (str/includes? html "data.approvals"))
+    (is (str/includes? html "/api/approvals/"))
+    (is (str/includes? html "/doc?path="))
+    (is (str/includes? html "Approve"))
+    (is (str/includes? html "Reject"))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]

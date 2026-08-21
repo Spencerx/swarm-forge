@@ -74,6 +74,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .float textarea{min-height:140px;resize:vertical}
 .float .actions{display:flex;gap:8px;justify-content:flex-end}
 .note{font-size:11px;color:var(--muted);margin:-4px 0 10px}
+.doc-body{max-height:min(60vh,480px);overflow:auto;white-space:pre-wrap;font-size:11px;background:#f4f5f1;border:1px solid var(--line);border-radius:6px;padding:8px}
 </style>
 </head>
 <body>
@@ -126,6 +127,18 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
         </div>
       </section>
     </aside>
+  </div>
+</div>
+
+<div class="float-layer" id="doc-layer">
+  <div class="float" role="dialog" aria-labelledby="doc-title">
+    <div class="titlebar" id="doc-title">Document</div>
+    <div class="body-pad">
+      <pre id="doc-body" class="doc-body"></pre>
+      <div class="actions">
+        <button type="button" class="btn" id="doc-close">Close</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -206,11 +219,71 @@ function renderChrome(data) {
   $("master-title").textContent = master;
 }
 
+function fileName(path) {
+  const parts = (path || "").split("/");
+  return parts[parts.length - 1] || path;
+}
+
+async function postApproval(id, action) {
+  await fetch("/api/approvals/" + encodeURIComponent(id) + "/" + action, {method: "POST"});
+  loadState();
+}
+
+async function viewDoc(path) {
+  const res = await fetch("/doc?path=" + encodeURIComponent(path));
+  const text = await res.text();
+  $("doc-title").textContent = fileName(path);
+  $("doc-body").textContent = text;
+  $("doc-layer").classList.add("open");
+}
+
+function artifactButton(path) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn btn-sm";
+  btn.textContent = "View " + fileName(path);
+  btn.onclick = () => viewDoc(path);
+  return btn;
+}
+
+function approvalButton(item, action, label, className) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = className;
+  btn.textContent = label;
+  btn.onclick = () => postApproval(item.id, action);
+  return btn;
+}
+
+function attentionRow(item) {
+  const row = document.createElement("div");
+  row.className = "att-row";
+  const pill = document.createElement("span");
+  pill.className = "pill pill-warn";
+  pill.textContent = "Approval";
+  const summary = document.createElement("span");
+  summary.textContent = item.gate + " · " + item.task;
+  row.append(pill, summary);
+  (item.artifacts || []).forEach((path) => row.appendChild(artifactButton(path)));
+  row.append(
+    approvalButton(item, "approve", "Approve", "btn btn-sm btn-approve"),
+    approvalButton(item, "reject", "Reject", "btn btn-sm")
+  );
+  return row;
+}
+
+function renderAttention(data) {
+  const rows = $("attention-rows");
+  rows.replaceChildren();
+  (data.approvals || []).forEach((item) => rows.appendChild(attentionRow(item)));
+}
+
 async function loadState() {
   const res = await fetch("/api/state");
   const data = await res.json();
   renderChrome(data);
   renderBoard(data);
+  renderAttention(data);
 }
 
 function closeNewTask() {
@@ -235,6 +308,7 @@ async function submitNewTask() {
 $("btn-new-task").onclick = () => $("new-task-layer").classList.add("open");
 $("nt-cancel").onclick = closeNewTask;
 $("nt-ok").onclick = submitNewTask;
+$("doc-close").onclick = () => $("doc-layer").classList.remove("open");
 loadState();
 </script>
 </body>

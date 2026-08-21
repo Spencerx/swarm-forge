@@ -13,6 +13,7 @@
   stop and ask for clarification; do not send a `note` handoff unless one of
   the explicit authorities above directed that note.
 - For `git_handoff`, commit first, then write a draft. The helper fills `commit` and `artifacts` from the sender worktree HEAD; do not type a SHA. If `SWARMFORGE_ROLE` is unset, the helper infers the role from `roles.tsv` and this worktree.
+- If you are the master agent on a pack that includes specifier, queue `git_handoff` when the work is ready. Do not ask for approval in the pane; the operator uses Attention.
 - Do not add extra git headers (`coverage`, CRAP, evidence). If evidence is needed, the helper writes it.
 - For `git_handoff`, write:
 

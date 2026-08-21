@@ -145,6 +145,39 @@
         (pack-board! "done" "--name" task)
         (pack-board! "move" "--name" task "--lane" (first recipients))))))
 
+(defn master-role-name [roles]
+  (some (fn [[role info]]
+          (when (= "master" (:worktree-name info))
+            role))
+        roles))
+
+(defn specifier-pack? [roles]
+  (contains? roles "specifier"))
+
+(defn from-master? [roles headers]
+  (= (get headers "from") (master-role-name roles)))
+
+(defn single-recipient? [headers]
+  (let [recipients (recipient-list headers)]
+    (boolean (and recipients (nil? (next recipients))))))
+
+(defn already-approved? [headers]
+  (not (str/blank? (get headers "approved"))))
+
+(defn should-hold? [roles headers]
+  (and (= "git_handoff" (get headers "type"))
+       (specifier-pack? roles)
+       (from-master? roles headers)
+       (single-recipient? headers)
+       (not (already-approved? headers))))
+
+(defn pending-dir []
+  (fs/path state-dir "handoffs" "pending_approval"))
+
+(defn hold! [path]
+  (move-with-collision path (pending-dir))
+  (log! "held" (str path)))
+
 (defn deliver! [roles socket sender-role path]
   (let [filename (fs/file-name path)
         message (parse-message path)
@@ -187,6 +220,13 @@
         (Thread/sleep step)
         (recur (- remaining step))))))
 
+(defn process-outbox-file! [roles socket path]
+  (let [headers (:headers (parse-message path))
+        from (get headers "from")]
+    (if (should-hold? roles headers)
+      (hold! (fs/path path))
+      (deliver! roles socket (or from "") (fs/path path)))))
+
 (defn poll-once! []
   (when-not (should-stop?)
     (let [roles (load-roles)
@@ -198,8 +238,7 @@
       (doseq [path paths
               :while (not (should-stop?))]
         (try
-          (let [from (get-in (parse-message path) [:headers "from"])]
-            (deliver! roles socket (or from "") (fs/path path)))
+          (process-outbox-file! roles socket path)
           (catch Exception e
             (log! "error" path (.getMessage e))
             (try

@@ -12,7 +12,9 @@
   (str "Usage:\n"
        "  pack_web.sh --test-state <root>\n"
        "  pack_web.sh --test-html\n"
-       "  pack_web.sh --test-post-task <root> <name> <text>"))
+       "  pack_web.sh --test-post-task <root> <name> <text>\n"
+       "  pack_web.sh --test-approve <root> <id>\n"
+       "  pack_web.sh --test-reject <root> <id>"))
 
 (defn usage []
   (binding [*out* *err*]
@@ -55,13 +57,55 @@
 (defn tasks [root]
   (mapv task-entry (lines (pack-board root "list"))))
 
+(defn parse-message [path]
+  (let [content (slurp (str path))
+        [header body] (str/split content #"\n\n" 2)
+        headers (into {}
+                      (for [line (str/split-lines header)
+                            :let [[k v] (str/split line #": " 2)]
+                            :when (and k v)]
+                        [k v]))]
+    {:headers headers :body (or body "")}))
+
+(defn comma-list [text]
+  (->> (str/split (or text "") #",")
+       (map str/trim)
+       (remove str/blank?)
+       vec))
+
+(defn pending-dir [root]
+  (fs/path root ".swarmforge" "handoffs" "pending_approval"))
+
+(defn pending-files [root]
+  (let [dir (pending-dir root)]
+    (if (fs/directory? dir)
+      (->> (fs/list-dir dir)
+           (filter #(and (fs/regular-file? %)
+                         (str/ends-with? (fs/file-name %) ".handoff")))
+           (sort-by #(fs/file-name %)))
+      [])))
+
+(defn approval-id [path]
+  (str/replace (fs/file-name path) #"\.handoff$" ""))
+
+(defn approval-entry [path]
+  (let [headers (:headers (parse-message path))
+        to (first (comma-list (get headers "to")))]
+    {:id (approval-id path)
+     :gate (str "spec → " to)
+     :task (get headers "task")
+     :artifacts (comma-list (get headers "artifacts"))}))
+
+(defn approvals [root]
+  (mapv approval-entry (pending-files root)))
+
 (defn dashboard-state [root]
   (let [master (master-role root)]
     {:master_role master
      :master_display (display-name-for-role master)
      :lanes (lanes root)
      :tasks (tasks root)
-     :approvals []
+     :approvals (approvals root)
      :work_in_flight []}))
 
 (defn require-root! [root]
@@ -80,28 +124,122 @@
               "--lane" (master-role root)
               "--text" (or text "")))
 
+(defn json-ok []
+  {:status 200
+   :headers {"Content-Type" "application/json"}
+   :body (json/generate-string {:ok true})})
+
 (defn post-tasks [root body]
   (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
     (create-task! root name text)
-    {:status 200
-     :headers {"Content-Type" "application/json"}
-     :body (json/generate-string {:ok true})}))
+    (json-ok)))
 
-(defn handle-request [root {:keys [method uri body]}]
-  (case [method uri]
-    ["GET" "/"]
+(defn pending-file [root id]
+  (fs/path (pending-dir root) (str id ".handoff")))
+
+(defn require-pending! [root id]
+  (let [path (pending-file root id)]
+    (when-not (fs/regular-file? path)
+      (exit! 1 (str "Unknown approval: " id)))
+    path))
+
+(defn with-approved [content]
+  (if (re-find #"(?m)^approved: " content)
+    content
+    (str/replace-first content #"\n\n" "\napproved: true\n\n")))
+
+(defn approve! [root id]
+  (let [src (require-pending! root id)
+        dest (fs/path root ".swarmforge" "handoffs" "outbox" (fs/file-name src))]
+    (fs/create-dirs (fs/parent dest))
+    (spit (str dest) (with-approved (slurp (str src))))
+    (fs/delete-if-exists src)))
+
+(defn write-reject-notify! [root task]
+  (when-not (str/blank? task)
+    (let [path (fs/path root ".swarmforge" "notify" (str "reject-" task))]
+      (fs/create-dirs (fs/parent path))
+      (spit (str path) "rejected\n"))))
+
+(defn reject! [root id]
+  (let [src (require-pending! root id)
+        task (get-in (parse-message src) [:headers "task"])]
+    (fs/delete-if-exists src)
+    (write-reject-notify! root task)))
+
+(defn approval-route [uri]
+  (let [path (first (str/split (or uri "") #"\?"))]
+    (when-let [[_ id action] (re-matches #"/api/approvals/([^/]+)/(approve|reject)" path)]
+      {:id (java.net.URLDecoder/decode id "UTF-8")
+       :action action})))
+
+(defn post-approval [root uri]
+  (if-let [{:keys [id action]} (approval-route uri)]
+    (do (if (= "approve" action)
+          (approve! root id)
+          (reject! root id))
+        (json-ok))
+    {:status 404 :body "Not found"}))
+
+(defn query-value [uri key]
+  (when-let [q (second (str/split (or uri "") #"\?" 2))]
+    (some (fn [pair]
+            (let [[k v] (str/split pair #"=" 2)]
+              (when (= k key)
+                (java.net.URLDecoder/decode (or v "") "UTF-8"))))
+          (str/split q #"&"))))
+
+(defn existing-path [root rel]
+  (let [path (fs/path root rel)]
+    (when (fs/exists? path)
+      (fs/canonicalize path))))
+
+(defn under-dir? [file dir]
+  (and file dir (fs/starts-with? file dir)))
+
+(defn allowed-doc? [root rel]
+  (when-not (str/blank? rel)
+    (let [file (existing-path root rel)]
+      (and (some? file)
+           (fs/regular-file? file)
+           (or (under-dir? file (existing-path root "features"))
+               (under-dir? file (existing-path root "qa")))))))
+
+(defn get-doc [root uri]
+  (let [rel (query-value uri "path")]
+    (if (allowed-doc? root rel)
+      {:status 200
+       :headers {"Content-Type" "text/plain; charset=utf-8"}
+       :body (slurp (str (existing-path root rel)))}
+      {:status 404 :body "Not found"})))
+
+(defn handle-get [root uri]
+  (cond
+    (= "/" uri)
     {:status 200
      :headers {"Content-Type" "text/html; charset=utf-8"}
      :body (dashboard-page)}
 
-    ["GET" "/api/state"]
+    (= "/api/state" uri)
     {:status 200
      :headers {"Content-Type" "application/json"}
      :body (json/generate-string (dashboard-state root))}
 
-    ["POST" "/api/tasks"]
-    (post-tasks root body)
+    (str/starts-with? (or uri "") "/doc")
+    (get-doc root uri)
 
+    :else {:status 404 :body "Not found"}))
+
+(defn handle-post [root uri body]
+  (cond
+    (= "/api/tasks" uri) (post-tasks root body)
+    (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri)
+    :else {:status 404 :body "Not found"}))
+
+(defn handle-request [root {:keys [method uri body]}]
+  (case method
+    "GET" (handle-get root uri)
+    "POST" (handle-post root uri body)
     {:status 404 :body "Not found"}))
 
 (defn test-state! [root]
@@ -117,11 +255,20 @@
                    :uri "/api/tasks"
                    :body (json/generate-string {:name name :text (or text "")})}))
 
+(defn test-approval! [root id action]
+  (when (str/blank? id)
+    (exit! 1 "Missing approval id"))
+  (handle-request (require-root! root)
+                  {:method "POST"
+                   :uri (str "/api/approvals/" id "/" action)}))
+
 (defn -main [& args]
   (case (first args)
     "--test-state" (test-state! (second args))
     "--test-html" (test-html!)
     "--test-post-task" (test-post-task! (second args) (nth args 2 nil) (nth args 3 nil))
+    "--test-approve" (test-approval! (second args) (nth args 2 nil) "approve")
+    "--test-reject" (test-approval! (second args) (nth args 2 nil) "reject")
     (do (usage)
         (exit! 1 nil)))
   (System/exit 0))
