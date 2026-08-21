@@ -164,18 +164,22 @@
 (defn poll-once! []
   (when-not (should-stop?)
     (let [roles (load-roles)
-          socket (str/trim (slurp (str socket-file)))]
-      (doseq [[role role-info] roles
-              path (or (outbox-files role-info) [])
+          socket (str/trim (slurp (str socket-file)))
+          paths (->> (concat (mapcat #(or (outbox-files %) []) (vals roles))
+                             (or (outbox-files {:worktree-path project-root}) []))
+                     (map str)
+                     distinct)]
+      (doseq [path paths
               :while (not (should-stop?))]
         (try
-          (deliver! roles socket role path)
+          (let [from (get-in (parse-message path) [:headers "from"])]
+            (deliver! roles socket (or from "") (fs/path path)))
           (catch Exception e
-            (log! "error" (str path) (.getMessage e))
+            (log! "error" path (.getMessage e))
             (try
-              (fail! path (.getMessage e))
+              (fail! (fs/path path) (.getMessage e))
               (catch Exception nested
-                (log! "failed-to-archive" (str path) (.getMessage nested))))))))))
+                (log! "failed-to-archive" path (.getMessage nested))))))))))
 
 (defn shutdown! []
   (reset! stopping-flag true)

@@ -114,6 +114,54 @@
                          :body "merge_and_process sender 0123456789"}
                         attrs))))
 
+(deftest swarm-handoff-help-is-usage-not-a-draft
+  ;; Given the handoff helper
+  ;; When it is run with --help or -h
+  ;; Then it prints usage and does not treat the flag as a missing draft file
+  (doseq [flag ["--help" "-h"]]
+    (let [result (run {:dir repo-root :ok? false}
+                      (script "swarm_handoff.sh") flag)
+          text (str (:err result) (:out result))]
+      (is (zero? (:exit result)) flag)
+      (is (str/includes? text "Usage:") flag)
+      (is (not (str/includes? text "Draft file not found")) flag))))
+
+(defn add-worktree! [root name]
+  (let [wt (fs/path root ".worktrees" name)]
+    (fs/create-dirs (fs/parent wt))
+    (run {:dir root} "git" "worktree" "add" "-q" (str wt) "HEAD")
+    wt))
+
+(deftest swarm-handoff-queues-on-the-project-from-a-worktree
+  ;; Given a sender worktree and a commit only made there
+  ;; When swarm_handoff runs in that worktree
+  ;; Then the queued file is on the project, and the commit is the worktree HEAD
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        wt (add-worktree! root "sender")
+        _ (setup-project! root {"sender" "task" "receiver" "task"})
+        _ (write-file (fs/path root ".swarmforge" "roles.tsv")
+                      (format "sender\tsender\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                              wt root))
+        _ (write-file (fs/path wt "slice.md") "from the worktree\n")
+        _ (run {:dir wt} "git" "add" "slice.md")
+        _ (run {:dir wt} "git" "commit" "-q" "-m" "Worktree slice")
+        wt-head (str/trim (:out (run {:dir wt} "git" "rev-parse" "--short=10" "HEAD")))
+        master-head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+        draft (fs/path wt "tmp" "from-wt.handoff")]
+    (is (not= wt-head master-head))
+    (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: task-from-worktree\ncommit: %s\n" wt-head))
+    (let [result (run {:dir wt :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (read-file queued)
+          outbox (str (fs/canonicalize (fs/path root ".swarmforge" "handoffs" "outbox")))]
+      (is (zero? (:exit result)))
+      (is (str/starts-with? (str (fs/canonicalize queued)) outbox))
+      (is (not (str/includes? queued "/.worktrees/")))
+      (is (str/includes? content (str "commit: " wt-head "\n")))
+      (is (not (str/includes? content (str "commit: " master-head "\n")))))))
+
 (deftest swarm-handoff-validates-and-queues-git-handoffs
   (let [root (tmp-dir)
         commit (init-repo! root)]

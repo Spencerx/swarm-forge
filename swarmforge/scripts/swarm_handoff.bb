@@ -6,7 +6,9 @@
             [clojure.string :as str]))
 
 (def usage-text
-  (str "Usage: swarm_handoff.sh <draft-file>\n\n"
+  (str "Usage:\n"
+       "  swarm_handoff.sh <draft-file>\n"
+       "  swarm_handoff.sh --help\n\n"
        "Draft formats:\n\n"
        "type: git_handoff\n"
        "to: <role>[,<role>...]\n"
@@ -75,8 +77,20 @@
     role
     (exit! 1 "Set SWARMFORGE_ROLE.")))
 
+(defn role-worktree [role]
+  (some (fn [line]
+          (let [cols (str/split line #"\t")]
+            (when (and (= role (first cols)) (>= (count cols) 3))
+              (nth cols 2))))
+        (str/split-lines (slurp (str (roles-file))))))
+
+(defn git-cwd []
+  (or (not-empty (role-worktree (sender-role)))
+      (git-root)
+      "."))
+
 (defn state-dir []
-  (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs"))
+  (fs/path (project-root) ".swarmforge" "handoffs"))
 
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
@@ -155,7 +169,8 @@
            errors))])))
 
 (defn canonical-commit [commit]
-  (let [matches (-> (command "." "git" "rev-parse" (str "--disambiguate=" commit))
+  (let [dir (git-cwd)
+        matches (-> (command dir "git" "rev-parse" (str "--disambiguate=" commit))
                     :out
                     str/split-lines
                     vec)]
@@ -165,9 +180,9 @@
 
       :else
       (let [object (first matches)
-            object-type (str/trim (:out (command "." "git" "cat-file" "-t" object)))]
+            object-type (str/trim (:out (command dir "git" "cat-file" "-t" object)))]
         (if (= "commit" object-type)
-          [(str/trim (:out (command "." "git" "rev-parse" "--short=10" object))) nil]
+          [(str/trim (:out (command dir "git" "rev-parse" "--short=10" object))) nil]
           [nil (format "Header 'commit' must resolve to a commit; '%s' resolves to '%s'." commit object-type)])))))
 
 (defn validate [headers ordered]
@@ -312,7 +327,13 @@
     (println)
     (println usage-text)))
 
+(defn help-arg? [args]
+  (boolean (some #{"--help" "-h"} args)))
+
 (defn -main [& args]
+  (when (help-arg? args)
+    (usage)
+    (System/exit 0))
   (when (not= 1 (count args))
     (usage)
     (System/exit 1))

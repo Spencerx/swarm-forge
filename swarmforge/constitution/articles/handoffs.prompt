@@ -2,6 +2,7 @@
 
 ## Sending Handoffs
 - Write a draft handoff file with only structured headers, then run `swarm_handoff.sh <draft-file>`.
+- `swarm_handoff.sh --help` prints usage. Do not pass `--help` as a draft path.
 - Use only these message types:
   - `git_handoff`
   - `note`
