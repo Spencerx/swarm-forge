@@ -482,11 +482,11 @@
     (let [result (pack-web root false "--test-inject-argv" (str root) argv-file text)
           argv (read-argv argv-file)]
       (is (zero? (:exit result)))
-      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "-l" text]
+      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "-l" text]
              (first argv)))
-      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "C-m"]
+      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "C-m"]
              (second argv)))
-      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier" "C-j"]
+      (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "C-j"]
              (nth argv 2))))))
 
 (deftest pack-web-post-task-injects-payload-into-master-session
@@ -573,7 +573,8 @@
         _ (setup-pack! root six-pack-roles)
         wif (:work_in_flight (web-state root))]
     (is (= six-pack-roles (mapv :role wif)))
-    (is (every? #(= "no_session" (:state %)) wif))))
+    (is (every? #(= "no_session" (:state %)) wif))
+    (is (every? #(= 0 (:activity %)) wif))))
 
 (deftest pack-web-lists-in-process-work-in-flight
   ;; Given in_process handoff for coder task cave-walk
@@ -632,8 +633,11 @@
     (is (str/includes? html "data-open-agent"))
     (is (str/includes? html "data.work_in_flight"))
     (is (str/includes? html "item.state"))
+    (is (str/includes? html "item.activity"))
     (is (str/includes? html "/agent/"))
     (is (str/includes? html "setInterval(loadState"))
+    (is (str/includes? html "id=\"error\""))
+    (is (str/includes? html "Swarm disconnected"))
     (is (not (str/includes? html "Open SL")))
     (is (not (str/includes? html "sl-therm")))
     (is (not (str/includes? html "merger")))))
@@ -644,7 +648,9 @@
   (let [result (pack-web (tmp-dir) false "--test-agent-page" "specifier")]
     (is (zero? (:exit result)))
     (is (str/includes? (:out result) "/api/agents/specifier/pane"))
-    (is (str/includes? (:out result) "setInterval(refresh"))))
+    (is (str/includes? (:out result) "setInterval(refresh"))
+    (is (str/includes? (:out result) "toEndSoon"))
+    (is (str/includes? (:out result) "stickBottom"))))
 
 (deftest pack-web-test-pane-prints-recorded-pane
   ;; Given a recorded pane.txt for coder task cave-walk
@@ -741,6 +747,19 @@
       (finally
         (.destroyForcibly proc)
         (.waitFor proc)))))
+
+(deftest pack-web-thermometer-heat-rises-when-pane-changes
+  ;; Given a specifier row
+  ;; When --test-heat samples two different pane texts
+  ;; Then activity after is greater than activity before
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier"])
+        result (pack-web root false "--test-heat" (str root))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (< (:before body) (:after body)))
+    (is (<= 0 (:before body)))
+    (is (<= (:after body) 6))))
 
 (deftest pack-dashboard-html-wires-teardown
   ;; When serving dashboard.html

@@ -316,7 +316,7 @@
                         "grok")
             command (:out result)]
         (is (str/includes? command "grok --cwd "))
-        (is (str/includes? command "--permission-mode acceptEdits"))
+        (is (str/includes? command "--permission-mode bypassPermissions"))
         (is (str/includes? command "--rules \"$(cat "))
         (is (str/includes? command "--verbatim \"$(cat "))
         (is (str/includes? command ".swarmforge/prompts/coder.md"))
@@ -339,6 +339,25 @@
         (is (not (str/includes? command "--permission-mode acceptEdits"))))
       (finally
         (fs/delete-tree root)))))
+
+(deftest launch-command-yolos-every-backend
+  ;; Given a pack role with no extra-args
+  ;; When --test-launch-command for each backend
+  ;; Then the start command bypasses permission prompts
+  (doseq [[agent needle] [["codex" "--yolo"]
+                          ["copilot" "--yolo"]
+                          ["claude" "--permission-mode bypassPermissions"]
+                          ["grok" "--permission-mode bypassPermissions"]]]
+    (let [root (tmp-dir)]
+      (try
+        (let [command (:out (run {:dir root}
+                                 (script "swarmforge.bb")
+                                 "--test-launch-command"
+                                 (str root)
+                                 agent))]
+          (is (str/includes? command needle) agent))
+        (finally
+          (fs/delete-tree root))))))
 
 (deftest launch-command-puts-project-tool-bin-on-path
   ;; Given a launched role

@@ -322,6 +322,21 @@
   (spit (str (:tmux-env-file ctx))
         (str (sh-out "tmux" "-S" (:tmux-socket ctx) "display-message" "-p" "#{socket_path},#{pid},#{pane_id}") "\n")))
 
+(defn copy-tree-into! [src dest]
+  (when (fs/directory? src)
+    (fs/create-dirs dest)
+    (fs/copy-tree src dest {:replace-existing true})))
+
+(defn sync-worktree-roles! [ctx worktree-path]
+  (copy-tree-into! (:roles-dir ctx) (fs/path worktree-path "swarmforge" "roles"))
+  (copy-tree-into! (fs/path (:swarm-forge-dir ctx) "constitution")
+                   (fs/path worktree-path "swarmforge" "constitution"))
+  (when (fs/exists? (:constitution-file ctx))
+    (fs/create-dirs (fs/path worktree-path "swarmforge"))
+    (fs/copy (:constitution-file ctx)
+             (fs/path worktree-path "swarmforge" "constitution.prompt")
+             {:replace-existing true})))
+
 (defn sync-worktree-scripts! [ctx]
   (doseq [row (:roles ctx)
           :let [worktree-path (:worktree-path row)]
@@ -334,6 +349,7 @@
           (if (fs/directory? entry)
             (fs/copy-tree entry target {:replace-existing true})
             (fs/copy entry target {:replace-existing true}))))
+      (sync-worktree-roles! ctx worktree-path)
       (fs/create-dirs (fs/path role-state-dir "notify"))
       (fs/copy (:sessions-file ctx) (fs/path role-state-dir "sessions.tsv") {:replace-existing true})
       (fs/copy (:roles-file ctx) (fs/path role-state-dir "roles.tsv") {:replace-existing true})
@@ -398,18 +414,18 @@
   (let [args (:extra-args row)]
     (if (str/blank? args) "" (str args " "))))
 
-(defn grok-wants-auto-approve? [row]
-  (when-let [args (:extra-args row)]
-    (or (str/includes? args "--always-approve")
-        (str/includes? args "--yolo")
-        (re-find #"--permission-mode\s+bypassPermissions" args))))
+(defn extra-has? [row needle]
+  (str/includes? (or (:extra-args row) "") needle))
+
+(defn yolo-flag [agent row]
+  (case agent
+    "codex" (if (extra-has? row "--yolo") "" "--yolo ")
+    "copilot" (if (extra-has? row "--yolo") "" "--yolo ")
+    "claude" (if (extra-has? row "bypassPermissions") "" "--permission-mode bypassPermissions ")
+    ""))
 
 (defn grok-permission-prefix [row]
-  ;; acceptEdits only auto-approves file edits; bypassPermissions is the
-  ;; CLI-enforced mode that matches --always-approve / --yolo.
-  (if (grok-wants-auto-approve? row)
-    "--permission-mode bypassPermissions "
-    "--permission-mode acceptEdits "))
+  "--permission-mode bypassPermissions ")
 
 (defn launch-command [ctx index row]
   (let [role (:role row)
@@ -428,9 +444,9 @@
     (write-agent-instruction-file! role prompt-file)
     (cond-> (str base
                 (case agent
-                  "claude" (str "claude --append-system-prompt-file " (sq (str prompt-file)) " --permission-mode acceptEdits -n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "codex" (str "codex -C " (sq (str role-worktree)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "copilot" (str "copilot -C " (sq (str role-worktree)) " --name " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
+                  "claude" (str "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
+                  "codex" (str "codex -C " (sq (str role-worktree)) " " (yolo-flag agent row) (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
+                  "copilot" (str "copilot -C " (sq (str role-worktree)) " --name " (sq (str "SwarmForge " display)) " " (yolo-flag agent row) (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
                   "grok" (str "grok --cwd " (sq (str role-worktree)) " " (grok-permission-prefix row) (extra-args-prefix row) "--rules \"$(cat " (sq (str prompt-file)) ")\" --verbatim \"$(cat " (sq (str prompt-file)) ")\"")))
       (= index 0)
       (str "; exit_code=$?; SWARMFORGE_TERMINAL_BACKEND=" (sq (:terminal-backend ctx))
@@ -570,10 +586,16 @@
                   (:session row) "' instead." reset))
     (sh "tmux" "-S" (:tmux-socket ctx) "attach-session" "-t" (:session row))))
 
+(defn clear-window-state! [ctx]
+  (spit (str (:window-ids-file ctx)) "")
+  (spit (str (:window-state-file ctx)) ""))
+
 (defn open-terminal-surfaces! [ctx]
   (cond
     (every? skip-terminal? (:roles ctx))
-    (println (str yellow "No visible Terminal surfaces; use the dashboard." reset))
+    (do
+      (clear-window-state! ctx)
+      (println (str yellow "No visible Terminal surfaces; use the dashboard." reset)))
 
     (terminal-call-ok? ctx "terminal_backend_can_open_sessions")
     (open-sessions-in-terminals! ctx)

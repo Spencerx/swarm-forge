@@ -1,6 +1,6 @@
 # Issues
 
-Live six-pack specifier session (`htw-console-app`, commit `566b956`). Handoff ceremony worked (no typed SHA, no `SWARMFORGE_ROLE=`, project outbox). These are leftover fumbles.
+Pack dashboard after Work Queue + live panes (`0fca036`).
 
 ## Open
 
@@ -8,34 +8,33 @@ Live six-pack specifier session (`htw-console-app`, commit `566b956`). Handoff c
 
 ## Implemented
 
-- Specifier hunts the whole home for APS tools — implemented; waiting for a hand test
-- Commit message is missing the role byline — implemented; waiting for a hand test
-- Temp files go to `/tmp` and the handoff outbox — implemented; waiting for a hand test
+- Make thermometers live
+- Make all agents yolo
+- Specifier response does not show in the specifier window
+- After teardown, show a red “Swarm disconnected”
 
 ---
 
-### Specifier hunts the whole home for APS tools
+### Make thermometers live
 
-**Implemented. Waiting for a hand test.** Specifier ran `find /Users/unclebob -name ir-dry-checker` and searched `*Acceptance*` directories. Permission errors on Photos/Downloads. Found `~/.local/bin/ir-dry-checker`. Did not use a project-local require/ensure.
+**Implemented.** `pack_web` samples each role pane on `/api/state`, hashes it, and raises/decays heat 0–6 as `activity`. Dashboard lights that many thermometer bars. Not the daemon.
 
-Same hunt as the previous specifier. The role prompt says use `ir-dry-checker`; it does not say where it lives or the exact argv. Agents reconstruct a search.
+**Where:** `pack_web.bb` `/api/state`; `pack/dashboard.html`.
 
-**Change:** assignment Tool Startup names `swarm_tool.sh require` / `ensure` and the two-arg forms (`gherkin-parser <feature> ./tmp/<stem>.json`, `ir-dry-checker <ir> ./tmp/<stem>.dry.json`). Do not make the agent find binaries under `$HOME`.
+### Make all agents yolo
 
-**Where:** generated `.swarmforge/prompts/<role>.md` Tool Startup; `swarm_tool.sh`; `engineering.prompt`.
+**Implemented.** Launcher always passes Codex/Copilot `--yolo` and Claude/Grok `bypassPermissions`. Pack confs on six/four/two-pack add `--yolo` extra-args. Pack graph unchanged.
 
-### Commit message is missing the role byline
+**Where:** pack-branch `swarmforge.conf`; `swarmforge.bb` launch args.
 
-**Implemented. Waiting for a hand test.** Commit `566b956` message is `Specify Hunt the Wumpus console app`. Constitution `workflow.prompt` requires `By <role>.` in every commit (`By specifier.`).
+### Specifier response does not show in the specifier window
 
-**Change:** keep the byline rule. A commit-msg hook infers the role (env or `roles.tsv` worktree) and appends `By <role>.` when it is missing. Do not make the agent remember a trailer.
+**Implemented.** Capture and inject target `session:Window.0` (same as launch). Agent page polls `/api/agents/<role>/pane` every second with squad TS scroll-to-end (`toEndSoon`, `stickBottom`).
 
-**Where:** `commit-msg-hook.bb`; installed at swarm startup; `workflow.prompt` Commit Messages.
+**Where:** `pack_web.bb` pane capture + `/api/agents/<role>/pane`; agent page JS.
 
-### Temp files go to `/tmp` and the handoff outbox
+### After teardown, show a red “Swarm disconnected”
 
-**Implemented. Waiting for a hand test.** Final parse/dry-check wrote into `/tmp`. Constitution: use `./tmp/` in the assigned worktree, not `/tmp`. The git_handoff draft was created under `.swarmforge/handoffs/outbox/tmp/` (queued anyway).
+**Implemented.** `#error` strip. `loadState` catch sets **Swarm disconnected** when `/api/state` cannot be fetched. Not the browser's `Failed to fetch`.
 
-**Change:** Tool Startup shows parse and dry-check into `./tmp/…`. Drafts live in `./tmp/` as well. `swarm_handoff.sh` rejects `/tmp` and the handoff outbox as scratch.
-
-**Where:** `workflow.prompt` Temporary Files; specifier Tool Startup; `swarm_handoff.bb` draft path check.
+**Where:** `pack/dashboard.html`.

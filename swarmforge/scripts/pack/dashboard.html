@@ -11,6 +11,7 @@ body{background:#cfd4cc;color:var(--ink);height:100vh;display:flex;flex-directio
 .cockpit{flex:1;min-height:0;margin:10px;background:var(--bg);border:1px solid #b8bfb6;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
 header.top{display:flex;gap:12px;align-items:center;padding:10px 14px;background:#f4f5f1;border-bottom:1px solid var(--line);flex-wrap:wrap}
 header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.meta .dot{color:var(--green)}.spacer{flex:1}
+.error{color:var(--red);padding:0 14px;font-size:12px;min-height:1em}
 .btn{border:1px solid #9aa59e;background:#fff;color:var(--ink);padding:5px 10px;border-radius:7px;font-size:12px;cursor:pointer}
 .btn:hover,.btn:focus-visible{background:#f0f2ee;color:var(--ink);border-color:#8a9188}
 .btn:active{background:#d5d9d2;color:#000;border-color:#6a726c;transform:translateY(1px)}
@@ -57,7 +58,12 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .st-ico.dot-yellow{background:#d4a017}
 .wif-therm{display:inline-flex;align-items:center;gap:1px;margin-left:4px;vertical-align:middle}
 .wif-therm .bar{width:2px;height:8px;border-radius:1px;background:#c5cbc2}
-.wif-therm.busy .bar:nth-child(-n+3){background:var(--green)}
+.wif-therm[data-heat="1"] .bar:nth-child(-n+1),
+.wif-therm[data-heat="2"] .bar:nth-child(-n+2),
+.wif-therm[data-heat="3"] .bar:nth-child(-n+3),
+.wif-therm[data-heat="4"] .bar:nth-child(-n+4),
+.wif-therm[data-heat="5"] .bar:nth-child(-n+5),
+.wif-therm[data-heat="6"] .bar:nth-child(-n+6){background:var(--green)}
 .ts-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}.ts-head h2{margin:0;flex:1}
 .history{flex:1;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;display:flex;flex-direction:column;gap:8px;font-size:11px}
 .bubble-you{border-left:3px solid #6b7c72;padding-left:8px;white-space:pre-wrap}
@@ -87,6 +93,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
     <button class="btn" type="button" id="btn-open-master">Open</button>
     <button class="btn btn-danger" type="button" id="teardown-btn">Teardown</button>
   </header>
+  <p id="error" class="error"></p>
 
   <div class="attention" id="attention">
     <div class="tag">Attention</div>
@@ -265,7 +272,9 @@ function workRow(item) {
   link.title = "open " + (item.role || "") + " session";
   link.textContent = item.role || "";
   const therm = document.createElement("span");
-  therm.className = "wif-therm" + (item.state === "live" ? " busy" : "");
+  const heat = Number(item.activity) || 0;
+  therm.className = "wif-therm";
+  therm.dataset.heat = String(heat);
   for (let i = 0; i < 6; i++) {
     const bar = document.createElement("span");
     bar.className = "bar";
@@ -346,12 +355,18 @@ function renderAttention(data) {
 }
 
 async function loadState() {
-  const res = await fetch("/api/state");
-  const data = await res.json();
-  renderChrome(data);
-  renderBoard(data);
-  renderAttention(data);
-  renderWork(data);
+  try {
+    const res = await fetch("/api/state", {cache: "no-store"});
+    if (!res.ok) throw new Error("offline");
+    const data = await res.json();
+    $("error").textContent = "";
+    renderChrome(data);
+    renderBoard(data);
+    renderAttention(data);
+    renderWork(data);
+  } catch (_) {
+    $("error").textContent = "Swarm disconnected";
+  }
 }
 
 function closeNewTask() {

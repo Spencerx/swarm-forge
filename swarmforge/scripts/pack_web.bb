@@ -22,6 +22,7 @@
        "  pack_web.sh --test-reject <root> <id>\n"
        "  pack_web.sh --test-pane <root> <role>\n"
        "  pack_web.sh --test-agent-page [role]\n"
+       "  pack_web.sh --test-heat <root>\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
 (def example-task-name "htw-console-app")
@@ -29,8 +30,13 @@
   "Integrate the stories in ~/junk/htw-stories into one console application.")
 
 (def ^:dynamic *tmux-stub* nil)
+(def ^:dynamic *pane-text* nil)
 (def ^:dynamic *sync-teardown?* false)
 (def teardown-delay-ms 250)
+(def pane-capture-lines 2000)
+(def pane-heat (atom {}))
+
+(declare session-name pane-target live-pane-text)
 
 (defn usage []
   (binding [*out* *err*]
@@ -79,13 +85,12 @@
            (mapv #(str/split % #"\t" -1)))
       [])))
 
+(defn master-row [root]
+  (some #(when (= "master" (nth % 1 nil)) %) (role-rows root)))
+
 (defn master-session [root]
-  (when-let [row (some #(when (= "master" (nth % 1 nil)) %) (role-rows root))]
-    (let [session (nth row 3 nil)
-          role (first row)]
-      (if (str/blank? session)
-        (str "swarmforge-" role)
-        session))))
+  (when-let [row (master-row root)]
+    (session-name row)))
 
 (defn tmux-socket [root]
   (let [file (fs/path root ".swarmforge" "tmux-socket")]
@@ -95,15 +100,16 @@
 (defn inject-master! [root text]
   (try
     (let [socket (tmux-socket root)
-          session (master-session root)]
-      (when (and socket session (not (str/blank? text)))
-        (send-keys! socket session "-l" text)
+          target (when-let [row (master-row root)]
+                   (pane-target row))]
+      (when (and socket target (not (str/blank? text)))
+        (send-keys! socket target "-l" text)
         (when-not (tmux-stub)
           (Thread/sleep 150))
-        (send-keys! socket session "C-m")
+        (send-keys! socket target "C-m")
         (when-not (tmux-stub)
           (Thread/sleep 50))
-        (send-keys! socket session "C-j")))
+        (send-keys! socket target "C-j")))
     (catch Exception _)))
 
 (defn pack-board [root & args]
@@ -231,20 +237,56 @@
       (str "swarmforge-" role)
       session)))
 
-(defn work-row-for-role [socket row]
+(defn pane-target [row]
+  (let [session (session-name row)
+        window (nth row 4 nil)]
+    (if (str/blank? window)
+      session
+      (str session ":" window ".0"))))
+
+(defn pane-sample [text]
+  (let [lines (vec (str/split-lines (str/trimr (or text ""))))]
+    (if (<= (count lines) 1)
+      ""
+      (str/join "\n" (pop lines)))))
+
+(defn next-heat [prev h]
+  (cond
+    (nil? h) 0
+    (nil? (:hash prev)) 1
+    (not= h (:hash prev)) (min 6 (inc (long (or (:heat prev) 0))))
+    :else (max 0 (dec (long (or (:heat prev) 0))))))
+
+(defn record-heat! [role text]
+  (let [h (when (not-empty text) (str (hash (pane-sample text))))
+        heat (next-heat (get @pane-heat role) h)]
+    (swap! pane-heat assoc role {:hash h :heat heat})
+    heat))
+
+(defn role-heat [role alive? text]
+  (if alive?
+    (record-heat! role text)
+    0))
+
+(defn queue-row [role from-file alive? activity]
+  {:task (or (:task from-file) "")
+   :role role
+   :state (role-queue-state alive? (some? from-file))
+   :updated_at (or (:updated_at from-file) "")
+   :activity activity})
+
+(defn work-row-for-role [root socket row]
   (let [role (first row)
         files (in-process-for-row row)
         path (first files)
         from-file (when path (work-entry role path))
-        alive? (session-alive? socket (session-name row))]
-    {:task (or (:task from-file) "")
-     :role role
-     :state (role-queue-state alive? (some? path))
-     :updated_at (or (:updated_at from-file) "")}))
+        alive? (session-alive? socket (session-name row))
+        text (live-pane-text root role)]
+    (queue-row role from-file alive? (role-heat role (or alive? (some? *pane-text*)) text))))
 
 (defn work-in-flight [root]
   (let [socket (tmux-socket root)]
-    (mapv #(work-row-for-role socket %) (role-rows root))))
+    (mapv #(work-row-for-role root socket %) (role-rows root))))
 
 (defn dashboard-state [root]
   (let [master (master-role root)]
@@ -375,29 +417,35 @@
       (str/replace ">" "&gt;")
       (str/replace "\"" "&quot;")))
 
+(defn role-row [root role]
+  (some #(when (= role (first %)) %) (role-rows root)))
+
 (defn session-for-role [root role]
-  (when-let [row (some #(when (= role (first %)) %) (role-rows root))]
-    (let [session (nth row 3 nil)]
-      (if (str/blank? session)
-        (str "swarmforge-" role)
-        session))))
+  (when-let [row (role-row root role)]
+    (session-name row)))
 
 (defn worktree-for-role [root role]
-  (when-let [row (some #(when (= role (first %)) %) (role-rows root))]
+  (when-let [row (role-row root role)]
     (nth row 2 nil)))
 
-(defn tmux-capture [socket session]
+(defn tmux-capture [socket target]
   (try
-    (let [result (sh "tmux" "-S" socket "capture-pane" "-p" "-t" session "-S" "-")]
+    (let [result (sh "tmux" "-S" socket "capture-pane" "-p" "-t" target
+                     "-S" (str "-" pane-capture-lines))]
       (when (zero? (:exit result))
         (:out result)))
     (catch Exception _)))
 
 (defn capture-pane [root role]
-  (let [socket (tmux-socket root)
-        session (session-for-role root role)]
-    (when (and socket session)
-      (tmux-capture socket session))))
+  (when-let [row (role-row root role)]
+    (let [socket (tmux-socket root)]
+      (when socket
+        (or (tmux-capture socket (pane-target row))
+            (tmux-capture socket (session-name row)))))))
+
+(defn live-pane-text [root role]
+  (or *pane-text*
+      (capture-pane root role)))
 
 (defn pane-files [root role]
   (let [dir (fs/path root ".swarmforge" "sessions" role)]
@@ -437,22 +485,33 @@
          "<style>html,body{height:100%;margin:0;overflow:hidden;background:#111;color:#f4f4f4;"
          "font-family:ui-monospace,Menlo,monospace}"
          "body{display:flex;flex-direction:column}"
-         "header{padding:10px 12px;border-bottom:1px solid #333;flex:0 0 auto}"
+         "header{height:42px;box-sizing:border-box;padding:10px 12px;border-bottom:1px solid #333;flex:0 0 auto}"
          "h1{font:inherit;margin:0;font-size:14px}"
          "#pane{flex:1 1 auto;margin:0;padding:12px;white-space:pre-wrap;overflow:auto;"
-         "min-height:0;height:calc(100vh - 42px)}</style></head>"
+         "min-height:0;height:calc(100vh - 42px);max-height:calc(100vh - 42px)}</style></head>"
          "<body><header><h1>" role-html "</h1></header>"
          "<pre id=\"pane\">" (html-escape snapshot) "</pre>"
          "<script>(function(){"
          "const pane=document.getElementById('pane');"
-         "function toEnd(){pane.scrollTop=pane.scrollHeight;}"
+         "let stickBottom=true;"
+         "let firstPaint=true;"
+         "function nearBottom(){"
+         "return (pane.scrollHeight-pane.scrollTop-pane.clientHeight)<=64;}"
+         "function toEnd(){pane.scrollTop=pane.scrollHeight;stickBottom=true;}"
+         "function toEndSoon(){"
+         "toEnd();requestAnimationFrame(toEnd);"
+         "setTimeout(toEnd,0);setTimeout(toEnd,50);setTimeout(toEnd,200);}"
+         "pane.addEventListener('scroll',function(){stickBottom=nearBottom();},{passive:true});"
          "async function refresh(){"
          "const r=await fetch('" pane-url "',{cache:'no-store'});"
          "const text=await r.text();"
-         "if(text!==pane.textContent){pane.textContent=text;toEnd();}"
+         "const changed=text!==pane.textContent;"
+         "if(changed){pane.textContent=text;}"
+         "if(firstPaint||stickBottom){toEndSoon();firstPaint=false;}"
          "}"
          "refresh();setInterval(refresh,1000);"
-         "window.addEventListener('load',toEnd);"
+         "window.addEventListener('load',toEndSoon);"
+         "window.addEventListener('pageshow',toEndSoon);"
          "})();</script></body></html>")))
 
 (defn agent-role [uri]
@@ -659,6 +718,15 @@
   (print (pane-page (or role "specifier") ""))
   (flush))
 
+(defn test-heat! [root]
+  (require-root! root)
+  (reset! pane-heat {})
+  (binding [*pane-text* "alpha\nline two\n"]
+    (let [before (:activity (first (work-in-flight root)))]
+      (binding [*pane-text* "beta\nline two\nchanged output\n"]
+        (let [after (:activity (first (work-in-flight root)))]
+          (println (json/generate-string {:before before :after after})))))))
+
 (defn test-teardown! [root confirm]
   (binding [*sync-teardown?* true]
     (let [resp (handle-request (require-root! root)
@@ -720,6 +788,7 @@
     "--test-reject" (test-approval! (second args) (nth args 2 nil) "reject")
     "--test-pane" (test-pane! (second args) (nth args 2 nil))
     "--test-agent-page" (test-agent-page! (second args))
+    "--test-heat" (test-heat! (second args))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))
