@@ -10,7 +10,9 @@
 
 (def usage-text
   (str "Usage:\n"
-       "  pack_web.sh --test-state <root>"))
+       "  pack_web.sh --test-state <root>\n"
+       "  pack_web.sh --test-html\n"
+       "  pack_web.sh --test-post-task <root> <name> <text>"))
 
 (defn usage []
   (binding [*out* *err*]
@@ -62,14 +64,64 @@
      :approvals []
      :work_in_flight []}))
 
-(defn test-state! [root]
+(defn require-root! [root]
   (when (str/blank? root)
     (exit! 1 "Missing project root"))
-  (println (json/generate-string (dashboard-state root))))
+  root)
+
+(defn dashboard-page []
+  (slurp (str (fs/path script-dir "pack" "dashboard.html"))))
+
+(defn create-task! [root name text]
+  (when (str/blank? name)
+    (exit! 1 "Missing task name"))
+  (pack-board root "create"
+              "--name" name
+              "--lane" (master-role root)
+              "--text" (or text "")))
+
+(defn post-tasks [root body]
+  (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
+    (create-task! root name text)
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string {:ok true})}))
+
+(defn handle-request [root {:keys [method uri body]}]
+  (case [method uri]
+    ["GET" "/"]
+    {:status 200
+     :headers {"Content-Type" "text/html; charset=utf-8"}
+     :body (dashboard-page)}
+
+    ["GET" "/api/state"]
+    {:status 200
+     :headers {"Content-Type" "application/json"}
+     :body (json/generate-string (dashboard-state root))}
+
+    ["POST" "/api/tasks"]
+    (post-tasks root body)
+
+    {:status 404 :body "Not found"}))
+
+(defn test-state! [root]
+  (println (:body (handle-request (require-root! root) {:method "GET" :uri "/api/state"}))))
+
+(defn test-html! []
+  (print (:body (handle-request nil {:method "GET" :uri "/"})))
+  (flush))
+
+(defn test-post-task! [root name text]
+  (handle-request (require-root! root)
+                  {:method "POST"
+                   :uri "/api/tasks"
+                   :body (json/generate-string {:name name :text (or text "")})}))
 
 (defn -main [& args]
   (case (first args)
     "--test-state" (test-state! (second args))
+    "--test-html" (test-html!)
+    "--test-post-task" (test-post-task! (second args) (nth args 2 nil) (nth args 3 nil))
     (do (usage)
         (exit! 1 nil)))
   (System/exit 0))

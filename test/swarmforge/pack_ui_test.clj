@@ -242,6 +242,50 @@
     (is (= [] (:approvals state)))
     (is (= [] (:work_in_flight state)))))
 
+(defn dashboard-html [root]
+  (:out (pack-web root true "--test-html")))
+
+(deftest pack-dashboard-html-has-new-task-and-no-add-story
+  ;; When serving dashboard.html
+  ;; Then New Task exists, Add Story does not, Troubleshooter does not
+  (let [root (tmp-dir)
+        html (dashboard-html root)]
+    (is (str/includes? html "New Task"))
+    (is (not (str/includes? html "Add Story")))
+    (is (not (str/includes? html "Troubleshooter")))
+    (is (re-find #"id=\"nt-name\"" html))
+    (is (re-find #"id=\"nt-text\"" html))
+    (is (re-find #"id=\"nt-ok\"" html))
+    (is (re-find #"id=\"nt-cancel\"" html))))
+
+(deftest pack-dashboard-renders-a-lane-per-conf-role
+  ;; Given --test-state lanes
+  ;; (JS uses lanes from /api/state; test HTML has id="columns" and id="btn-new-task")
+  (let [root (tmp-dir)
+        _ (setup-pack! root six-pack-roles)
+        state (json/parse-string (:out (pack-web root true "--test-state" (str root))) true)
+        html (dashboard-html root)]
+    (is (= six-pack-roles (:lanes state)))
+    (is (re-find #"id=\"columns\"" html))
+    (is (re-find #"id=\"btn-new-task\"" html))
+    (is (str/includes? html "/api/state"))
+    (is (str/includes? html "data.lanes"))
+    (doseq [role six-pack-roles]
+      (is (not (str/includes? html (str "data-lane=\"" role "\"")))))))
+
+(deftest pack-web-post-task-creates-a-card-in-the-master-lane
+  ;; Given a pack whose master role is coder
+  ;; When POST /api/tasks records name and text
+  ;; Then the card sits in lane coder with that body
+  (let [root (tmp-dir)
+        text "Integrate HTW stories"]
+    (setup-pack! root ["coder" "cleaner"])
+    (let [result (pack-web root true "--test-post-task" (str root) "htw-console-app" text)
+          body (slurp (str (fs/path root ".swarmforge/board/htw-console-app.txt")))]
+      (is (zero? (:exit result)))
+      (is (= "coder" (task-lane root "htw-console-app")))
+      (is (= text body)))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
     (System/exit (+ fail error))))
