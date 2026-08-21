@@ -121,6 +121,27 @@
     (is (re-matches #"\d{4}-\d{2}-\d{2}T.*Z" (nth cols 2 "")))
     (is (= (nth cols 2 nil) (nth cols 3 nil)))))
 
+(deftest pack-board-lists-lanes-in-role-order
+  ;; Given roles specifier, coder, QA
+  ;; When pack_board lanes
+  ;; Then it prints those roles in conf order
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier" "coder" "QA"])
+        result (pack-board root true "lanes" "--root" (str root))]
+    (is (= "specifier\ncoder\nQA\n" (:out result)))))
+
+(deftest pack-board-reports-the-master-lane
+  ;; Given specifier's worktree is master
+  ;; When pack_board master-lane
+  ;; Then it prints specifier
+  (let [root (tmp-dir)]
+    (write-file
+     (fs/path root ".swarmforge/roles.tsv")
+     (str "specifier\tmaster\t" root "\tsession\tSpecifier\tcodex\ttask\n"
+          "coder\tcoder\t" root "/.worktrees/coder\tsession\tCoder\tcodex\ttask\n"))
+    (let [result (pack-board root true "master-lane" "--root" (str root))]
+      (is (= "specifier\n" (:out result))))))
+
 (deftest pack-board-rejects-a-duplicate-task-name
   ;; Given a card named htw-console-app
   ;; When New Task records the same name again

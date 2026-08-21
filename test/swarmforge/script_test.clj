@@ -141,6 +141,59 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarmforge-parses-window-invisible
+  ;; Given window-invisible specifier codex master
+  ;; When --test-parse
+  ;; Then specifier is listed and visible? is false
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root "swarmforge/constitution.prompt")
+                  "Read articles.\n")
+      (write-file (fs/path root "swarmforge/swarmforge.conf")
+                  "window-invisible specifier codex master\n")
+      (write-file (fs/path root "swarmforge/roles/specifier.prompt") "specifier\n")
+      (let [result (run {:dir root} (script "swarmforge.bb") "--test-parse" (str root))]
+        (is (str/includes? (:out result) "specifier"))
+        (is (str/includes? (:out result) "invisible")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarmforge-fails-without-a-master-worktree
+  ;; Given only window coder codex coder
+  ;; When --test-parse
+  ;; Then exit 1 and error mentions master
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root "swarmforge/constitution.prompt")
+                  "Read articles.\n")
+      (write-file (fs/path root "swarmforge/swarmforge.conf")
+                  "window coder codex coder\n")
+      (write-file (fs/path root "swarmforge/roles/coder.prompt") "coder\n")
+      (let [result (run {:dir root :ok? false} (script "swarmforge.bb") "--test-parse" (str root))]
+        (is (= 1 (:exit result)))
+        (is (str/includes? (:err result) "master")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarmforge-fails-with-two-master-worktrees
+  ;; Given two windows whose worktree is master
+  ;; When --test-parse
+  ;; Then exit 1 and error mentions master
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root "swarmforge/constitution.prompt")
+                  "Read articles.\n")
+      (write-file (fs/path root "swarmforge/swarmforge.conf")
+                  (str "window specifier codex master\n"
+                       "window coder codex master\n"))
+      (write-file (fs/path root "swarmforge/roles/specifier.prompt") "specifier\n")
+      (write-file (fs/path root "swarmforge/roles/coder.prompt") "coder\n")
+      (let [result (run {:dir root :ok? false} (script "swarmforge.bb") "--test-parse" (str root))]
+        (is (= 1 (:exit result)))
+        (is (str/includes? (:err result) "master")))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest swarmforge-terminal-bridge-preserves-adapter-globals
   (let [root (tmp-dir)]
     (try

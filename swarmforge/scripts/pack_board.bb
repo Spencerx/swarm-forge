@@ -13,7 +13,9 @@
        "  pack_board.sh move <name> <lane>\n"
        "  pack_board.sh done --name <name> [--root <dir>]\n"
        "  pack_board.sh done <name>\n"
-       "  pack_board.sh list [--root <dir>]"))
+       "  pack_board.sh list [--root <dir>]\n"
+       "  pack_board.sh lanes [--root <dir>]\n"
+       "  pack_board.sh master-lane [--root <dir>]"))
 
 (def flags {"--root" :root "--name" :name "--lane" :lane "--text" :text})
 
@@ -156,13 +158,35 @@
       (print (slurp (str file)))
       (flush))))
 
+(defn roles-file [root]
+  (fs/path root ".swarmforge" "roles.tsv"))
+
+(defn role-rows [root]
+  (map #(str/split % #"\t" -1) (read-rows (roles-file root))))
+
+(defn lanes! [opts]
+  (doseq [cols (role-rows (resolve-root opts))]
+    (println (first cols))))
+
+(defn master-lane! [opts]
+  (let [masters (filterv #(= "master" (second %)) (role-rows (resolve-root opts)))]
+    (when-not (= 1 (count masters))
+      (exit! 1 "Config must name exactly one master worktree"))
+    (println (ffirst masters))))
+
+(def commands
+  {"create" create!
+   "move" move!
+   "done" done!
+   "list" list!
+   "lanes" lanes!
+   "master-lane" master-lane!})
+
 (defn -main [& args]
-  (let [opts (parse-args args)]
-    (case (first (:positional opts))
-      "create" (create! opts)
-      "move" (move! opts)
-      "done" (done! opts)
-      "list" (list! opts)
+  (let [opts (parse-args args)
+        command (get commands (first (:positional opts)))]
+    (if command
+      (command opts)
       (do (usage)
           (exit! 1 nil))))
   (System/exit 0))

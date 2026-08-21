@@ -126,71 +126,103 @@
     (sh "git" "-C" (str (:working-dir ctx)) "add" ".")
     (sh "git" "-C" (str (:working-dir ctx)) "commit" "-m" "Initial swarmforge repository")))
 
+(defn config-fail! [message]
+  (fail! (str red "Error:" reset " " message)))
+
+(defn skip-config-line? [line]
+  (or (str/blank? line) (str/starts-with? line "#")))
+
+(defn special-worktree? [worktree]
+  (#{"none" "master"} worktree))
+
+(defn visible-window? [directive line-no]
+  (case directive
+    "window" true
+    "window-invisible" false
+    (config-fail! (str "Unknown config directive on line " line-no ": " directive))))
+
+(defn receive-fields [trailing]
+  (if (#{"task" "batch"} (first trailing))
+    [(first trailing) (rest trailing)]
+    ["task" trailing]))
+
+(defn extra-args-str [tokens]
+  (when (seq tokens)
+    (str/join " " tokens)))
+
+(defn reject-if [pred message]
+  (when pred (config-fail! message)))
+
+(defn validate-window! [ctx line-no role agent worktree receive-mode roles worktrees]
+  (reject-if (str/includes? role "_")
+             (str "Invalid role '" role "' on line " line-no ": role names may not contain underscores"))
+  (reject-if (contains? roles role)
+             (str "Duplicate role '" role "' in " (:config-file ctx)))
+  (reject-if (and (not (special-worktree? worktree)) (contains? worktrees worktree))
+             (str "Duplicate worktree '" worktree "' in " (:config-file ctx)))
+  (reject-if (or (str/includes? worktree "/") (#{"." ".."} worktree))
+             (str "Invalid worktree '" worktree "' for role '" role "'"))
+  (reject-if (not (#{"claude" "codex" "copilot" "grok"} agent))
+             (str "Unsupported agent '" agent "' for role '" role "'"))
+  (reject-if (not (#{"task" "batch"} receive-mode))
+             (str "Invalid receive mode '" receive-mode "' for role '" role "' on line " line-no ": expected task or batch"))
+  (reject-if (not (fs/exists? (fs/path (:roles-dir ctx) (str role ".prompt"))))
+             (str "Missing role prompt " (fs/path (:roles-dir ctx) (str role ".prompt")))))
+
+(defn window-row [ctx role agent worktree receive-mode extra-args visible?]
+  {:role role
+   :agent agent
+   :session (session-name-for-role role)
+   :display-name (display-name-for-role role)
+   :worktree-name worktree
+   :worktree-path (if (special-worktree? worktree)
+                    (:working-dir ctx)
+                    (worktree-path-for-name (:worktrees-dir ctx) worktree))
+   :receive-mode receive-mode
+   :extra-args extra-args
+   :visible? visible?})
+
+(defn parse-window-line [ctx line-no line roles worktrees]
+  (let [fields (str/split line #"\s+")]
+    (reject-if (< (count fields) 4)
+               (str "Invalid config line " line-no ": " line))
+    (let [[directive role agent worktree & trailing] fields
+          agent (str/lower-case agent)
+          [receive-mode extra-tokens] (receive-fields trailing)
+          visible? (visible-window? directive line-no)]
+      (validate-window! ctx line-no role agent worktree receive-mode roles worktrees)
+      (window-row ctx role agent worktree receive-mode (extra-args-str extra-tokens) visible?))))
+
+(defn require-master-worktree! [rows]
+  (let [masters (filterv #(= "master" (:worktree-name %)) rows)]
+    (reject-if (not= 1 (count masters))
+               "Config must name exactly one master worktree")))
+
 (defn parse-config [ctx]
   (when-not (fs/exists? (:config-file ctx))
-    (fail! (str red "Error:" reset " Config not found at " (:config-file ctx))))
+    (config-fail! (str "Config not found at " (:config-file ctx))))
   (when-not (fs/exists? (:constitution-file ctx))
-    (fail! (str red "Error:" reset " Constitution prompt not found at " (:constitution-file ctx))))
-  (let [roles-dir (:roles-dir ctx)
-        worktrees-dir (:worktrees-dir ctx)
-        working-dir (:working-dir ctx)]
-    (loop [lines (map-indexed vector (str/split-lines (slurp (str (:config-file ctx)))))
-           rows []
-           roles #{}
-           worktrees #{}]
-      (if-let [[line-index raw-line] (first lines)]
-        (let [line-no (inc line-index)
-              line (str/trim raw-line)]
-          (if (or (str/blank? line) (str/starts-with? line "#"))
-            (recur (next lines) rows roles worktrees)
-            (let [fields (str/split line #"\s+")]
-              (when (< (count fields) 4)
-                (fail! (str red "Error:" reset " Invalid config line " line-no ": " line)))
-              (let [[keyword role agent worktree & trailing] fields
-                    agent (str/lower-case agent)
-                    receive-mode (if (#{"task" "batch"} (first trailing))
-                                   (first trailing)
-                                   "task")
-                    extra-arg-tokens (if (#{"task" "batch"} (first trailing))
-                                       (rest trailing)
-                                       trailing)
-                    extra-args (when (seq extra-arg-tokens)
-                                 (str/join " " extra-arg-tokens))]
-                (when-not (= "window" keyword)
-                  (fail! (str red "Error:" reset " Unknown config directive on line " line-no ": " keyword)))
-                (when (str/includes? role "_")
-                  (fail! (str red "Error:" reset " Invalid role '" role "' on line " line-no ": role names may not contain underscores")))
-                (when (contains? roles role)
-                  (fail! (str red "Error:" reset " Duplicate role '" role "' in " (:config-file ctx))))
-                (when (and (not (#{"none" "master"} worktree)) (contains? worktrees worktree))
-                  (fail! (str red "Error:" reset " Duplicate worktree '" worktree "' in " (:config-file ctx))))
-                (when (or (str/includes? worktree "/") (#{"." ".."} worktree))
-                  (fail! (str red "Error:" reset " Invalid worktree '" worktree "' for role '" role "'")))
-                (when-not (#{"claude" "codex" "copilot" "grok"} agent)
-                  (fail! (str red "Error:" reset " Unsupported agent '" agent "' for role '" role "'")))
-                (when-not (#{"task" "batch"} receive-mode)
-                  (fail! (str red "Error:" reset " Invalid receive mode '" receive-mode "' for role '" role "' on line " line-no ": expected task or batch")))
-                (when-not (fs/exists? (fs/path roles-dir (str role ".prompt")))
-                  (fail! (str red "Error:" reset " Missing role prompt " (fs/path roles-dir (str role ".prompt")))))
-                (let [worktree-path (if (#{"none" "master"} worktree)
-                                      working-dir
-                                      (worktree-path-for-name worktrees-dir worktree))
-                      row {:role role
-                           :agent agent
-                           :session (session-name-for-role role)
-                           :display-name (display-name-for-role role)
-                           :worktree-name worktree
-                           :worktree-path worktree-path
-                           :receive-mode receive-mode
-                           :extra-args extra-args}]
-                  (recur (next lines)
-                         (conj rows row)
-                         (conj roles role)
-                         (cond-> worktrees (not (#{"none" "master"} worktree)) (conj worktree))))))))
-        (do
-          (when (empty? rows)
-            (fail! (str red "Error:" reset " No windows defined in " (:config-file ctx))))
-          (assoc ctx :roles rows))))))
+    (config-fail! (str "Constitution prompt not found at " (:constitution-file ctx))))
+  (loop [lines (map-indexed vector (str/split-lines (slurp (str (:config-file ctx)))))
+         rows []
+         roles #{}
+         worktrees #{}]
+    (if-let [[line-index raw-line] (first lines)]
+      (let [line-no (inc line-index)
+            line (str/trim raw-line)]
+        (if (skip-config-line? line)
+          (recur (next lines) rows roles worktrees)
+          (let [row (parse-window-line ctx line-no line roles worktrees)
+                worktree (:worktree-name row)]
+            (recur (next lines)
+                   (conj rows row)
+                   (conj roles (:role row))
+                   (cond-> worktrees (not (special-worktree? worktree)) (conj worktree))))))
+      (do
+        (reject-if (empty? rows)
+                   (str "No windows defined in " (:config-file ctx)))
+        (require-master-worktree! rows)
+        (assoc ctx :roles rows)))))
 
 (defn write-sessions-file! [ctx]
   (spit (str (:sessions-file ctx))
@@ -550,13 +582,17 @@
       parse-config
       (assoc :terminal-backend (detect-terminal-backend))))
 
+(defn visibility-label [row]
+  (if (:visible? row) "visible" "invisible"))
+
 (defn test-parse! [root]
   (let [ctx (prepare-ctx (context root))]
     (prepare-workspace! ctx)
     (doseq [row (:roles ctx)]
       (println (str (:role row) " " (:display-name row) " " (:worktree-path row) " "
                     (:receive-mode row)
-                    (when-let [extra (:extra-args row)] (str " " extra)))))
+                    (when-let [extra (:extra-args row)] (str " " extra))
+                    " " (visibility-label row))))
     (print (slurp (str (:roles-file ctx))))
     (print (slurp (str (:sessions-file ctx))))))
 
