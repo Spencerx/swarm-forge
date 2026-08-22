@@ -441,6 +441,27 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest tool-startup-names-board-path-and-receive-send-argv
+  ;; Given a specifier assignment
+  ;; When SwarmForge writes the instruction file
+  ;; Then Tool Startup names .swarmforge/board/tasks.tsv, ready_for_next.sh,
+  ;; and swarm_handoff.sh ./tmp/<draft>
+  (let [root (tmp-dir)]
+    (try
+      (let [result (run {:dir root}
+                        (script "swarmforge.bb")
+                        "--test-instruction-file"
+                        (str root)
+                        "specifier")
+            prompt (str/trim (:out result))]
+        (is (str/includes? prompt ".swarmforge/board/tasks.tsv"))
+        (is (not (str/includes? prompt "swarmforge/sessions.tsv")))
+        (is (str/includes? prompt "ready_for_next.sh"))
+        (is (str/includes? prompt "swarm_handoff.sh ./tmp/"))
+        (is (str/includes? prompt "pack_dashboard_request.sh clarify")))
+      (finally
+        (fs/delete-tree root)))))
+
 (defn commit-body [root]
   (:out (run {:dir root} "git" "log" "-1" "--format=%B")))
 

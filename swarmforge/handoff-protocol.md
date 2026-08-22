@@ -193,8 +193,9 @@ Used for one short freeform message.
 
 Agents should not send `note` handoffs unless the user, role prompt, or
 constitution explicitly directs them to send one. When blocked by ambiguity,
-contradiction, or test/specification conflict, an agent should stop and ask for
-clarification instead of sending a `note` handoff unless one of those explicit
+contradiction, or test/specification conflict, an agent should ask the operator
+with `pack_dashboard_request.sh clarify ./tmp/question.txt` instead of asking
+in the pane or sending a `note` handoff unless one of those explicit
 authorities directed that note.
 
 Draft:

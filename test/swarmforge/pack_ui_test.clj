@@ -293,7 +293,7 @@
     (is (= "specifier" (:master_role state)))
     (is (= "Specifier" (:master_display state)))
     (is (= six-pack-roles (:lanes state)))
-    (is (= [{:name "htw-console-app" :lane "specifier" :updated_at updated}]
+    (is (= [{:name "htw-console-app" :lane "specifier" :updated_at updated :status ""}]
            (:tasks state)))
     (is (= [] (:approvals state)))
     (is (= six-pack-roles (mapv :role (:work_in_flight state))))))
@@ -767,6 +767,17 @@
     (is (<= 0 (:before body)))
     (is (<= (:after body) 6))))
 
+(deftest pack-web-thermometer-ignores-codex-working-timer
+  ;; Given a Codex specifier pane whose only change is the working timer
+  ;; When --test-heat-codex samples both
+  ;; Then activity does not rise
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier"])
+        result (pack-web root false "--test-heat-codex" (str root))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (not (< (:before body) (:after body))))))
+
 (deftest pack-dashboard-html-wires-teardown
   ;; When serving dashboard.html
   ;; Then Teardown posts /api/teardown after confirm
@@ -890,6 +901,105 @@
         (is (= "status?" (str/trim (:body row))))
         (is (= "the spec is ready" (str/trim (:response row))))
         (is (= "done" (:status row)))))))
+
+(deftest pack-dashboard-documents-menu-paints-above-the-board
+  ;; Given dashboard HTML
+  ;; When the Documents menu opens
+  ;; Then it is position:fixed (not clipped by Attention overflow)
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html ".menu-list{"))
+    (is (re-find #"(?s)\.menu-list\{[^}]*position:fixed" html))
+    (is (str/includes? html "getBoundingClientRect"))))
+
+(deftest pack-dashboard-pins-chat-to-the-bottom
+  ;; Given dashboard HTML
+  ;; When the first chat turn renders
+  ;; Then the history pins to the bottom on first paint
+  (let [html (dashboard-html (tmp-dir))]
+    (is (re-find #"id=\"chat-history\"" html))
+    (is (str/includes? html "scrollHeight"))
+    (is (str/includes? html "firstPaint"))))
+
+(deftest pack-dashboard-cards-show-im-status
+  ;; Given dashboard HTML
+  ;; Then cards render task.status from /api/state
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "task.status"))))
+
+(deftest pack-dashboard-attention-has-clarification-row
+  ;; Given dashboard HTML
+  ;; Then Attention can show Request clarification with a text box
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "Request clarification"))
+    (is (str/includes? html "data.clarifications"))
+    (is (str/includes? html "/api/clarifications/"))))
+
+(deftest pack-web-thermometer-ignores-reordered-tail
+  ;; Given a pane whose last 20 lines are the same bag in a new order
+  ;; When --test-heat-reorder samples both
+  ;; Then activity does not rise
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier"])
+        result (pack-web root false "--test-heat-reorder" (str root))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (= (:before body) (:after body)))))
+
+(deftest pack-web-thermometer-uses-last-twenty-line-bag
+  ;; Given a 25-line pane whose first five lines then change
+  ;; When --test-heat-head samples both
+  ;; Then activity stays at the baseline (tail bag unchanged)
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier"])
+        result (pack-web root false "--test-heat-head" (str root))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (= (:before body) (:after body)))))
+
+(deftest pack-web-card-status-is-last-im-sentence
+  ;; Given a specifier card and a pane tail with an I'm sentence
+  ;; When --test-state
+  ;; Then that task's status is that sentence
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")]
+    (let [result (pack-web-env root {} "--test-status-pane" (str root)
+                               "Working on HTW.\nI'm idle, so I'm running ready_for_next.sh.\nesc to interrupt · 3s\n")
+          state (json/parse-string (:out result) true)
+          card (first (:tasks state))]
+      (is (zero? (:exit result)))
+      (is (= "HTW" (:name card)))
+      (is (str/includes? (str (:status card)) "I'm idle, so I'm running ready_for_next.sh")))))
+
+(deftest pack-web-clarification-posts-to-attention-and-answers-into-the-role
+  ;; Given QA posts a clarification question
+  ;; When the operator answers
+  ;; Then /api/state listed it and the answer is injected into QA with the durable id
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        question (fs/path root "tmp" "question.txt")]
+    (setup-pack! root ["QA"])
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str (fs/path root "tmux.sock") "\n"))
+    (write-file question "Does the bat drop to any of 20 rooms?\n")
+    (let [created (run {:dir root :env {"SWARMFORGE_ROLE" "QA"}}
+                       (script "pack_dashboard_request.sh")
+                       "clarify" (str question))
+          id (str/trim (:out created))
+          pending (web-state root)
+          item (first (:clarifications pending))]
+      (is (zero? (:exit created)))
+      (is (str/starts-with? id "clar-"))
+      (is (= "QA" (:role item)))
+      (is (str/includes? (:body item) "Does the bat drop to any of 20 rooms?"))
+      (is (= "pending" (:status item)))
+      (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.")
+      (let [argv (slurp argv-file)
+            done (first (:clarifications (web-state root)))]
+        (is (str/includes? argv id))
+        (is (str/includes? argv "Yes, 1 to 20."))
+        (is (= "done" (:status done)))
+        (is (str/includes? (:response done) "Yes, 1 to 20."))))))
 
 (deftest pack-web-serves-the-task-body
   ;; Given New Task HTW with body

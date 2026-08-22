@@ -23,6 +23,11 @@
        "  pack_web.sh --test-pane <root> <role>\n"
        "  pack_web.sh --test-agent-page [role]\n"
        "  pack_web.sh --test-heat <root>\n"
+       "  pack_web.sh --test-heat-codex <root>\n"
+       "  pack_web.sh --test-heat-reorder <root>\n"
+       "  pack_web.sh --test-heat-head <root>\n"
+       "  pack_web.sh --test-status-pane <root> <text>\n"
+       "  pack_web.sh --test-answer-clarification <root> <id> <text>\n"
        "  pack_web.sh --test-task <root> <name>\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
@@ -37,7 +42,7 @@
 (def pane-capture-lines 2000)
 (def pane-heat (atom {}))
 
-(declare session-name pane-target live-pane-text)
+(declare session-name pane-target live-pane-text role-row pane-sample backend-name)
 
 (defn usage []
   (binding [*out* *err*]
@@ -98,20 +103,27 @@
     (when (fs/exists? file)
       (not-empty (str/trim (slurp (str file)))))))
 
-(defn inject-master! [root text]
+(defn inject-target! [socket target text]
+  (when (and socket target (not (str/blank? text)))
+    (send-keys! socket target "-l" text)
+    (when-not (tmux-stub)
+      (Thread/sleep 150))
+    (send-keys! socket target "C-m")
+    (when-not (tmux-stub)
+      (Thread/sleep 50))
+    (send-keys! socket target "C-j")))
+
+(defn inject-role! [root role text]
   (try
     (let [socket (tmux-socket root)
-          target (when-let [row (master-row root)]
+          target (when-let [row (role-row root role)]
                    (pane-target row))]
-      (when (and socket target (not (str/blank? text)))
-        (send-keys! socket target "-l" text)
-        (when-not (tmux-stub)
-          (Thread/sleep 150))
-        (send-keys! socket target "C-m")
-        (when-not (tmux-stub)
-          (Thread/sleep 50))
-        (send-keys! socket target "C-j")))
+      (inject-target! socket target text))
     (catch Exception _)))
+
+(defn inject-master! [root text]
+  (when-let [row (master-row root)]
+    (inject-role! root (first row) text)))
 
 (defn pack-board [root & args]
   (let [script (str (fs/path script-dir "pack_board.sh"))
@@ -135,8 +147,31 @@
   (let [[name lane _created updated] (str/split line #"\t")]
     {:name name :lane lane :updated_at updated}))
 
+(defn last-n-lines [text n]
+  (vec (take-last n (str/split-lines (or text "")))))
+
+(defn pane-sentences [text]
+  (->> (str/split-lines (or text ""))
+       (mapcat #(str/split % #"(?<=[.!?…])\s+"))
+       (map str/trim)
+       (remove str/blank?)
+       vec))
+
+(defn im-status [text backend]
+  (let [tail (last-n-lines (pane-sample text backend) 20)]
+    (or (last (filter #(str/includes? % "I'm") (pane-sentences (str/join "\n" tail))))
+        "")))
+
+(defn task-with-status [root task]
+  (let [role (:lane task)
+        row (role-row root role)
+        text (when row (live-pane-text root role))
+        backend (when row (backend-name row))]
+    (assoc task :status (im-status text backend))))
+
 (defn tasks [root]
-  (mapv task-entry (lines (pack-board root "list"))))
+  (mapv #(task-with-status root (task-entry %))
+        (lines (pack-board root "list"))))
 
 (defn parse-message [path]
   (let [content (slurp (str path))
@@ -245,28 +280,74 @@
       session
       (str session ":" window ".0"))))
 
-(defn pane-sample [text]
-  (let [lines (vec (str/split-lines (str/trimr (or text ""))))]
-    (if (<= (count lines) 1)
-      ""
-      (str/join "\n" (pop lines)))))
+(defn backend-name [row]
+  (str/lower-case (or (nth row 5 nil) "")))
 
-(defn next-heat [prev h]
-  (cond
-    (nil? h) 0
-    (nil? (:hash prev)) 1
-    (not= h (:hash prev)) (min 6 (inc (long (or (:heat prev) 0))))
-    :else (max 0 (dec (long (or (:heat prev) 0))))))
+(defn codex-input-line? [line]
+  (str/starts-with? line "› "))
 
-(defn record-heat! [role text]
-  (let [h (when (not-empty text) (str (hash (pane-sample text))))
-        heat (next-heat (get @pane-heat role) h)]
-    (swap! pane-heat assoc role {:hash h :heat heat})
+(defn strip-codex-input [text]
+  (let [lines (vec (str/split-lines (or text "")))
+        input-index (last (keep-indexed (fn [idx line]
+                                          (when (codex-input-line? line) idx))
+                                        lines))
+        kept (if input-index (subvec lines 0 input-index) lines)]
+    (str/join "\n" kept)))
+
+(defn codex-working-line? [line]
+  (let [t (str/trim line)]
+    (or (str/blank? t)
+        (re-find #"(?i)esc to interrupt" t)
+        (re-find #"(?i)^working\b" t)
+        (re-find #"(?i)•\s*working\b" t)
+        (re-find #"(?i)worked for\s" t)
+        (re-find #"ctrl \+ t to view transcript" t)
+        (re-find #"gpt-\S+" t)
+        (re-find #"·\s*\d+s\b" t))))
+
+(defn strip-trailing-chrome [text pred]
+  (let [lines (vec (str/split-lines (str/trimr (or text ""))))
+        cut (loop [i (dec (count lines))]
+              (cond
+                (neg? i) 0
+                (pred (nth lines i)) (recur (dec i))
+                :else (inc i)))]
+    (str/join "\n" (subvec lines 0 (max cut 0)))))
+
+(defn pane-sample [text backend]
+  (let [backend (str/lower-case (or backend ""))]
+    (cond
+      (#{"codex" "chatgpt"} backend)
+      (strip-trailing-chrome (strip-codex-input text) codex-working-line?)
+
+      :else
+      (let [lines (vec (str/split-lines (str/trimr (or text ""))))]
+        (if (<= (count lines) 1)
+          ""
+          (str/join "\n" (pop lines)))))))
+
+(defn bag-diff [a b]
+  (let [ks (set (concat (keys a) (keys b)))]
+    (reduce (fn [n k]
+              (+ n (Math/abs (- (long (get a k 0)) (long (get b k 0))))))
+            0
+            ks)))
+
+(defn heat-from-count [n]
+  (min 6 (long n)))
+
+(defn record-heat! [role text backend]
+  (let [tail (last-n-lines (pane-sample text backend) 20)
+        bag (frequencies tail)
+        prev (get @pane-heat role)
+        n (if (:bag prev) (bag-diff (:bag prev) bag) 0)
+        heat (heat-from-count n)]
+    (swap! pane-heat assoc role {:bag bag :heat heat})
     heat))
 
-(defn role-heat [role alive? text]
+(defn role-heat [role alive? text backend]
   (if alive?
-    (record-heat! role text)
+    (record-heat! role text backend)
     0))
 
 (defn cards-in-lane [all-tasks lane]
@@ -290,7 +371,7 @@
         text (live-pane-text root role)
         task-name (or (:task from-file) (:name card) "")]
     (queue-row role task-name busy? alive?
-               (role-heat role (or alive? (some? *pane-text*)) text)
+               (role-heat role (or alive? (some? *pane-text*)) text (backend-name row))
                (or (:updated_at from-file) (:updated_at card) ""))))
 
 (defn work-in-flight [root]
@@ -330,6 +411,31 @@
   (vec (concat (map parse-chat (chat-files (chat-pending-dir root)))
                (map parse-chat (chat-files (chat-done-dir root))))))
 
+(defn clar-pending-dir [root]
+  (fs/path root ".swarmforge" "dashboard" "clarifications" "pending"))
+
+(defn clar-done-dir [root]
+  (fs/path root ".swarmforge" "dashboard" "clarifications" "done"))
+
+(defn parse-clarification [path]
+  (let [raw (slurp (str path))
+        [header body] (str/split raw #"\n\n" 2)
+        headers (into {}
+                      (for [line (str/split-lines header)
+                            :let [[k v] (str/split line #": " 2)]
+                            :when (and k v)]
+                        [k v]))]
+    {:id (get headers "id")
+     :status (get headers "status")
+     :role (get headers "role")
+     :body (or body "")
+     :response (str/replace (get headers "response" "") #"\\n" "\n")
+     :created_at (get headers "created_at")}))
+
+(defn list-clarifications [root]
+  (vec (concat (map parse-clarification (chat-files (clar-pending-dir root)))
+               (map parse-clarification (chat-files (clar-done-dir root))))))
+
 (defn chat-id []
   (str "req-" (str/replace (str (java.time.Instant/now)) #"[^0-9A-Za-z]" "")))
 
@@ -360,7 +466,8 @@
      :tasks (tasks root)
      :approvals (approvals root)
      :work_in_flight (work-in-flight root)
-     :chat (list-chat root)}))
+     :chat (list-chat root)
+     :clarifications (list-clarifications root)}))
 
 (defn require-root! [root]
   (when (str/blank? root)
@@ -396,6 +503,46 @@
       (let [id (write-chat-request! root text)]
         (inject-master! root (chat-wake id text))))
     (json-ok)))
+
+(defn clar-pending-file [root id]
+  (fs/path (clar-pending-dir root) (str id ".request")))
+
+(defn render-clarification [{:keys [id status role body response created_at]}]
+  (str "id: " id "\n"
+       "status: " status "\n"
+       (when-not (str/blank? role) (str "role: " role "\n"))
+       "created_at: " created_at "\n"
+       (when-not (str/blank? response)
+         (str "response: " (str/replace response #"\n" "\\n") "\n"))
+       "\n"
+       (or body "")
+       (when-not (str/ends-with? (or body "") "\n") "\n")))
+
+(defn answer-clarification! [root id text]
+  (let [src (clar-pending-file root id)]
+    (when-not (fs/regular-file? src)
+      (exit! 1 (str "Unknown clarification: " id)))
+    (let [entry (parse-clarification src)
+          dest (fs/path (clar-done-dir root) (str id ".request"))
+          role (:role entry)]
+      (fs/create-dirs (fs/parent dest))
+      (spit (str dest) (render-clarification (assoc entry
+                                                   :status "done"
+                                                   :response text)))
+      (fs/delete-if-exists src)
+      (inject-role! root role (chat-wake id text)))))
+
+(defn clarification-route [uri]
+  (let [path (first (str/split (or uri "") #"\?"))]
+    (when-let [[_ id] (re-matches #"/api/clarifications/([^/]+)/answer" path)]
+      (java.net.URLDecoder/decode id "UTF-8"))))
+
+(defn post-clarification [root uri body]
+  (if-let [id (clarification-route uri)]
+    (let [text (or (:text (json/parse-string (or body "{}") true)) "")]
+      (answer-clarification! root id text)
+      (json-ok))
+    {:status 404 :body "Not found"}))
 
 (defn pending-file [root id]
   (fs/path (pending-dir root) (str id ".handoff")))
@@ -748,6 +895,7 @@
     (= "/api/chat" uri) (post-chat root body)
     (= "/api/teardown" uri) (teardown-response root body)
     (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri)
+    (str/starts-with? (or uri "") "/api/clarifications/") (post-clarification root uri body)
     :else {:status 404 :body "Not found"}))
 
 (defn handle-request [root {:keys [method uri body]}]
@@ -805,14 +953,47 @@
   (print (pane-page (or role "specifier") ""))
   (flush))
 
-(defn test-heat! [root]
+(defn print-heat-pair! [root before-text after-text]
   (require-root! root)
   (reset! pane-heat {})
-  (binding [*pane-text* "alpha\nline two\n"]
+  (binding [*pane-text* before-text]
     (let [before (:activity (first (work-in-flight root)))]
-      (binding [*pane-text* "beta\nline two\nchanged output\n"]
+      (binding [*pane-text* after-text]
         (let [after (:activity (first (work-in-flight root)))]
           (println (json/generate-string {:before before :after after})))))))
+
+(defn test-heat! [root]
+  (print-heat-pair! root "alpha\nline two\n" "beta\nline two\nchanged output\n"))
+
+(defn test-heat-codex! [root]
+  (print-heat-pair! root
+                    "I'll load the SwarmForge instructions.\n\nesc to interrupt · 3s\n"
+                    "I'll load the SwarmForge instructions.\n\nesc to interrupt · 4s\n"))
+
+(defn test-heat-reorder! [root]
+  (let [lines (mapv #(str "line-" %) (range 20))]
+    (print-heat-pair! root
+                      (str (str/join "\n" lines) "\n")
+                      (str (str/join "\n" (reverse lines)) "\n"))))
+
+(defn test-heat-head! [root]
+  (let [tail (mapv #(str "tail-" %) (range 20))
+        before (str (str/join "\n" (concat ["a" "b" "c" "d" "e"] tail)) "\n")
+        after (str (str/join "\n" (concat ["v" "w" "x" "y" "z"] tail)) "\n")]
+    (print-heat-pair! root before after)))
+
+(defn test-status-pane! [root text]
+  (require-root! root)
+  (binding [*pane-text* (or text "")]
+    (println (:body (handle-request root {:method "GET" :uri "/api/state"})))))
+
+(defn test-answer-clarification! [root id text]
+  (when (str/blank? id)
+    (exit! 1 "Missing clarification id"))
+  (handle-request (require-root! root)
+                  {:method "POST"
+                   :uri (str "/api/clarifications/" id "/answer")
+                   :body (json/generate-string {:text (or text "")})}))
 
 (defn test-task! [root name]
   (when (str/blank? name)
@@ -884,6 +1065,11 @@
     "--test-pane" (test-pane! (second args) (nth args 2 nil))
     "--test-agent-page" (test-agent-page! (second args))
     "--test-heat" (test-heat! (second args))
+    "--test-heat-codex" (test-heat-codex! (second args))
+    "--test-heat-reorder" (test-heat-reorder! (second args))
+    "--test-heat-head" (test-heat-head! (second args))
+    "--test-status-pane" (test-status-pane! (second args) (nth args 2 nil))
+    "--test-answer-clarification" (test-answer-clarification! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-task" (test-task! (second args) (nth args 2 nil))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)

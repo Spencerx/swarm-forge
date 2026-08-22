@@ -557,6 +557,67 @@
           (is (zero? (:exit result)))
           (is (str/includes? (:out result) "HANDOFF QUEUED:")))))))
 
+(deftest swarm-handoff-fills-missing-or-invalid-priority
+  ;; Given a git_handoff draft that omits priority, or writes priority: normal
+  ;; When swarm_handoff queues it
+  ;; Then the queued file has priority: 50
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")]
+    (testing "omitted priority becomes 50"
+      (let [draft (fs/path root "tmp" "no-priority.handoff")]
+        (write-file draft "type: git_handoff\nto: receiver\ntask: fill-priority\n")
+        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                          (script "swarm_handoff.sh") (str draft))
+              queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+              content (when (zero? (:exit result)) (read-file queued))]
+          (is (zero? (:exit result)))
+          (is (str/includes? (str content) "priority: 50\n")))))
+    (testing "priority: normal becomes 50"
+      (let [draft (fs/path root "tmp" "word-priority.handoff")]
+        (write-file draft "type: git_handoff\nto: receiver\npriority: normal\ntask: fill-priority-word\n")
+        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                          (script "swarm_handoff.sh") (str draft))
+              queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+              content (when (zero? (:exit result)) (read-file queued))]
+          (is (zero? (:exit result)))
+          (is (str/includes? (str content) "priority: 50\n"))
+          (is (not (str/includes? (str content) "priority: normal\n"))))))
+    (testing "valid two-digit priority is kept"
+      (let [draft (fs/path root "tmp" "keep-priority.handoff")]
+        (write-file draft "type: git_handoff\nto: receiver\npriority: 00\ntask: keep-priority\n")
+        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                          (script "swarm_handoff.sh") (str draft))
+              queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+              content (when (zero? (:exit result)) (read-file queued))]
+          (is (zero? (:exit result)))
+          (is (str/includes? (str content) "priority: 00\n")))))))
+
+(deftest swarm-handoff-strips-extra-draft-payload
+  ;; Given a git_handoff draft with prose after the headers
+  ;; When swarm_handoff queues it
+  ;; Then it is valid and the queued body is the helper payload, not the prose
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+        draft (fs/path root "tmp" "with-payload.handoff")]
+    (write-file draft (str "type: git_handoff\nto: receiver\npriority: 50\ntask: strip-payload\n\n"
+                           "Please merge this and run the tests.\n"))
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) (str "merge_and_process sender " sha)))
+      (is (not (str/includes? (str content) "Please merge this and run the tests."))))))
+
 (deftest helpers-refuse-wrong-current-work-shape
   (let [root (tmp-dir)
         batch (fs/path root ".swarmforge/handoffs/inbox/in_process/batch_20260615T000001Z_000001")]

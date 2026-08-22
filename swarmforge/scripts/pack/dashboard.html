@@ -22,11 +22,11 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .btn-sm{padding:4px 8px;font-size:11px}
 .btn-approve{background:#2f6b3a;border-color:#2f6b3a;color:#fff}
 .btn-approve:hover{background:#3d8a4a;border-color:#3d8a4a;color:#fff}
-.attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto}
+.attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto;position:relative;z-index:30}
 .attention .tag{font-weight:700;text-transform:uppercase;font-size:10px;color:#8a5a0a;padding-top:4px}
 .att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin-bottom:4px}
 .menu{position:relative;display:inline-block}
-.menu-list{display:none;position:absolute;left:0;top:100%;z-index:20;min-width:12rem;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px 0}
+.menu-list{display:none;position:fixed;z-index:200;min-width:12rem;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px 0}
 .menu.open .menu-list{display:block}
 .menu-list button{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;font:inherit;font-size:11px;cursor:pointer}
 .menu-list button:hover{background:#f0f2ee}
@@ -44,6 +44,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .card:hover{border-color:#a89f7e}
 .card .title{font-weight:700;font-size:12px}
 .card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block}
+.card .status{color:var(--muted);font-size:10px;white-space:normal;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 .card .foot{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px;margin-top:auto}
 .timer{font-variant-numeric:tabular-nums}
 .rail{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden;font-size:12px;scrollbar-gutter:stable}
@@ -70,7 +71,8 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .wif-therm[data-heat="5"] .bar:nth-child(-n+5),
 .wif-therm[data-heat="6"] .bar:nth-child(-n+6){background:var(--green)}
 .ts-head{display:flex;align-items:center;gap:8px;margin-bottom:6px}.ts-head h2{margin:0;flex:1}
-.history{flex:1;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;display:flex;flex-direction:column;gap:8px;font-size:11px}
+.history{flex:1;min-height:0;background:#fff;border:1px solid var(--line);border-radius:8px;padding:8px;overflow:auto;display:flex;flex-direction:column;justify-content:flex-end;gap:8px;font-size:11px}
+.att-row input[type=text]{flex:1;min-width:8rem;border:1px solid #c6cbc5;border-radius:6px;padding:4px 6px;font:inherit;font-size:11px}
 .bubble-you{border-left:3px solid #6b7c72;padding-left:8px;white-space:pre-wrap}
 .bubble-ts{color:#4a4f4c;padding-left:12px;font-style:italic;white-space:pre-wrap}
 .composer{display:flex;gap:6px;margin-top:8px;align-items:flex-end}
@@ -195,6 +197,12 @@ function cardEl(task) {
   lane.textContent = task.lane;
   foot.appendChild(lane);
   card.append(title, foot);
+  if (task.status) {
+    const status = document.createElement("div");
+    status.className = "status";
+    status.textContent = task.status;
+    card.appendChild(status);
+  }
   card.onclick = () => openGrowable("/task?name=" + encodeURIComponent(task.name || ""), "task-" + (task.name || ""));
   return card;
 }
@@ -347,6 +355,11 @@ function artifactMenu(paths) {
   btn.onclick = (event) => {
     event.stopPropagation();
     wrap.classList.toggle("open");
+    if (wrap.classList.contains("open")) {
+      const box = btn.getBoundingClientRect();
+      list.style.top = box.bottom + "px";
+      list.style.left = box.left + "px";
+    }
   };
   wrap.append(btn, list);
   return wrap;
@@ -378,10 +391,42 @@ function attentionRow(item) {
   return row;
 }
 
+function clarificationRow(item) {
+  const row = document.createElement("div");
+  row.className = "att-row";
+  const pill = document.createElement("span");
+  pill.className = "pill pill-warn";
+  pill.textContent = "Request clarification";
+  const summary = document.createElement("span");
+  summary.textContent = item.body || "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.placeholder = "Answer…";
+  const send = document.createElement("button");
+  send.type = "button";
+  send.className = "btn btn-sm btn-primary";
+  send.textContent = "Submit";
+  send.onclick = () => postClarification(item.id, input.value);
+  row.append(pill, summary, input, send);
+  return row;
+}
+
+async function postClarification(id, text) {
+  if (!text || !text.trim()) return;
+  await fetch("/api/clarifications/" + encodeURIComponent(id) + "/answer", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text})
+  });
+  loadState();
+}
+
 function renderAttention(data) {
   const rows = $("attention-rows");
   rows.replaceChildren();
   (data.approvals || []).forEach((item) => rows.appendChild(attentionRow(item)));
+  (data.clarifications || []).filter((item) => item.status === "pending")
+    .forEach((item) => rows.appendChild(clarificationRow(item)));
 }
 
 async function loadState() {
@@ -419,6 +464,11 @@ async function submitNewTask() {
   loadState();
 }
 
+let firstPaint = true;
+function chatToEnd() {
+  const history = $("chat-history");
+  history.scrollTop = history.scrollHeight;
+}
 function renderChat(data) {
   const history = $("chat-history");
   history.replaceChildren();
@@ -434,6 +484,11 @@ function renderChat(data) {
       history.appendChild(reply);
     }
   });
+  if (firstPaint || (history.scrollHeight - history.scrollTop - history.clientHeight) <= 64) {
+    chatToEnd();
+    requestAnimationFrame(chatToEnd);
+    firstPaint = false;
+  }
 }
 
 async function sendChat() {

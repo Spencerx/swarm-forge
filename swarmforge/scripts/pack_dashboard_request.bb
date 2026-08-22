@@ -8,6 +8,7 @@
 (def usage-text
   (str "Usage:\n"
        "  pack_dashboard_request.sh answer <id> <answer-file>\n"
+       "  pack_dashboard_request.sh clarify <question-file>\n"
        "  pack_dashboard_request.sh create --root <dir> --body <text>\n"
        "  pack_dashboard_request.sh list --root <dir>\n"))
 
@@ -29,12 +30,51 @@
     (when (zero? (:exit result))
       (str/trim (:out result)))))
 
+(defn git-common-dir []
+  (let [result (command "." "git" "rev-parse" "--git-common-dir")]
+    (when (zero? (:exit result))
+      (let [path (str/trim (:out result))]
+        (if (fs/absolute? path)
+          (str (fs/path path))
+          (str (fs/absolutize path)))))))
+
+(defn has-roles? [root]
+  (fs/exists? (fs/path root ".swarmforge" "roles.tsv")))
+
 (defn project-root []
   (let [here (str (fs/absolutize "."))]
     (cond
-      (fs/exists? (fs/path here ".swarmforge")) here
-      (git-root) (git-root)
+      (has-roles? here) here
+      (and (git-root) (has-roles? (git-root))) (git-root)
+      (git-common-dir)
+      (let [candidate (str (fs/parent (git-common-dir)))]
+        (if (has-roles? candidate)
+          candidate
+          (exit! 1 "Cannot find SwarmForge project root")))
       :else (exit! 1 "Cannot find SwarmForge project root"))))
+
+(defn same-path? [a b]
+  (try
+    (= (str (fs/canonicalize a)) (str (fs/canonicalize b)))
+    (catch Exception _
+      (= (str a) (str b)))))
+
+(defn infer-role []
+  (let [here (or (git-root) (str (fs/absolutize ".")))
+        file (fs/path (project-root) ".swarmforge" "roles.tsv")]
+    (when (fs/exists? file)
+      (some (fn [line]
+              (let [cols (str/split line #"\t")
+                    role (first cols)
+                    wt (when (>= (count cols) 3) (nth cols 2))]
+                (when (and (not-empty role) (not-empty wt) (same-path? wt here))
+                  role)))
+            (str/split-lines (slurp (str file)))))))
+
+(defn sender-role []
+  (or (not-empty (System/getenv "SWARMFORGE_ROLE"))
+      (infer-role)
+      (exit! 1 "Set SWARMFORGE_ROLE.")))
 
 (defn parse-flag [args key]
   (let [tail (drop-while #(not= key %) args)]
@@ -46,6 +86,9 @@
 
 (defn chat-id []
   (str "req-" (str/replace (timestamp) #"[^0-9A-Za-z]" "")))
+
+(defn clar-id []
+  (str "clar-" (str/replace (timestamp) #"[^0-9A-Za-z]" "")))
 
 (defn pending-dir [root]
   (fs/path root ".swarmforge" "dashboard" "requests" "pending"))
@@ -65,9 +108,10 @@
                         [k v]))]
     (assoc headers "body" (or (get headers "body") body ""))))
 
-(defn render-request [{:strs [id status body response created_at updated_at]}]
+(defn render-request [{:strs [id status body response created_at updated_at role]}]
   (str "id: " id "\n"
        "status: " status "\n"
+       (when-not (str/blank? role) (str "role: " role "\n"))
        "created_at: " created_at "\n"
        (when updated_at (str "updated_at: " updated_at "\n"))
        (when-not (str/blank? response) (str "response: " (str/replace response #"\n" "\\n") "\n"))
@@ -87,10 +131,42 @@
   (let [m (parse-kv (slurp (str path)))]
     {:id (get m "id")
      :status (get m "status")
+     :role (get m "role")
      :body (or (get m "body") "")
      :response (or (not-empty (str/replace (get m "response" "") #"\\n" "\n")) "")
      :created_at (get m "created_at")
      :updated_at (get m "updated_at")}))
+
+(defn clar-pending-dir [root]
+  (fs/path root ".swarmforge" "dashboard" "clarifications" "pending"))
+
+(defn clar-done-dir [root]
+  (fs/path root ".swarmforge" "dashboard" "clarifications" "done"))
+
+(defn clar-file [dir id]
+  (fs/path dir (str id ".request")))
+
+(defn create-clarification! [root role body]
+  (when (str/blank? body)
+    (exit! 1 "Missing clarification question"))
+  (let [id (clar-id)
+        now (timestamp)
+        file (clar-file (clar-pending-dir root) id)]
+    (fs/create-dirs (fs/parent file))
+    (spit (str file) (render-request {"id" id
+                                      "status" "pending"
+                                      "role" role
+                                      "body" body
+                                      "created_at" now}))
+    id))
+
+(defn clarify! [question-file]
+  (when-not (fs/regular-file? question-file)
+    (exit! 1 (str "Question file not found: " question-file)))
+  (let [root (project-root)
+        role (sender-role)
+        body (slurp (str question-file))]
+    (println (create-clarification! root role body))))
 
 (defn list-requests [root]
   (vec (concat (map request-entry (list-files (pending-dir root)))
@@ -138,6 +214,7 @@
 (defn -main [& args]
   (case (first args)
     "answer" (answer-request! (project-root) (second args) (nth args 2 nil))
+    "clarify" (clarify! (second args))
     "create" (let [root (or (parse-flag args "--root") (project-root))
                    body (or (parse-flag args "--body") "")]
                (println (:id (create-request! root body))))
