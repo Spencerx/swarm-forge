@@ -24,12 +24,14 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .btn-approve:hover{background:#3d8a4a;border-color:#3d8a4a;color:#fff}
 .attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto;position:relative;z-index:30}
 .attention .tag{font-weight:700;text-transform:uppercase;font-size:10px;color:#8a5a0a;padding-top:4px}
-.att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin-bottom:4px}
+.att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin:0 0 4px}
 .menu{position:relative;display:inline-block}
 .menu-list{display:none;position:fixed;z-index:200;min-width:12rem;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px 0}
 .menu.open .menu-list{display:block}
 .menu-list button{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;font:inherit;font-size:11px;cursor:pointer}
 .menu-list button:hover{background:#f0f2ee}
+.batch-more{margin-left:2px;color:var(--muted);font-weight:700;cursor:default;vertical-align:baseline}
+.menu-list .batch-item{display:block;padding:6px 10px;font-size:11px;white-space:nowrap}
 .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:600;background:var(--chip)}
 .pill-warn{background:#ffe2a8;color:#7a4e00}.pill-ok{background:var(--green-bg);color:var(--green)}
 .body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 8px minmax(220px,var(--rail));overflow:hidden}
@@ -283,9 +285,37 @@ function stateIcon(state) {
 
 function workRow(item) {
   const tr = document.createElement("tr");
+  tr.dataset.workRole = item.role || "";
   const task = document.createElement("td");
-  task.title = item.task || "";
-  task.textContent = item.task || "";
+  const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+  task.dataset.tasks = names.join("\n");
+  task.append(names[0] || "");
+  if (names.length > 1) {
+    const more = document.createElement("span");
+    more.className = "menu batch-more";
+    const mark = document.createElement("span");
+    mark.textContent = "+";
+    const list = document.createElement("div");
+    list.className = "menu-list";
+    names.forEach((name) => {
+      const row = document.createElement("div");
+      row.className = "batch-item";
+      row.textContent = name;
+      list.appendChild(row);
+    });
+    const place = () => {
+      const box = mark.getBoundingClientRect();
+      list.style.top = box.bottom + "px";
+      list.style.left = box.left + "px";
+    };
+    more.addEventListener("mouseenter", () => {
+      more.classList.add("open");
+      place();
+    });
+    more.addEventListener("mouseleave", () => more.classList.remove("open"));
+    more.append(mark, list);
+    task.append(" ", more);
+  }
   const role = document.createElement("td");
   const link = document.createElement("button");
   link.type = "button";
@@ -313,8 +343,33 @@ function workRow(item) {
 
 function renderWork(data) {
   const rows = $("work-rows");
-  rows.replaceChildren();
-  (data.work_in_flight || []).forEach((item) => rows.appendChild(workRow(item)));
+  const items = data.work_in_flight || [];
+  const live = {};
+  items.forEach((item) => {
+    live[item.role] = true;
+  });
+  [...rows.querySelectorAll("[data-work-role]")].forEach((tr) => {
+    if (!live[tr.dataset.workRole]) tr.remove();
+  });
+  items.forEach((item, i) => {
+    let tr = rows.querySelector("[data-work-role=\"" + item.role + "\"]");
+    if (!tr) {
+      tr = workRow(item);
+      const before = rows.children[i];
+      if (before) rows.insertBefore(tr, before);
+      else rows.appendChild(tr);
+      return;
+    }
+    const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+    const key = names.join("\n");
+    if (tr.children[0].dataset.tasks !== key) {
+      tr.replaceWith(workRow(item));
+      return;
+    }
+    tr.querySelector(".wif-therm").dataset.heat = String(Number(item.activity) || 0);
+    tr.children[2].replaceChildren(stateIcon(item.state));
+    tr.children[3].textContent = age(item.updated_at);
+  });
 }
 
 function fileName(path) {
@@ -410,7 +465,7 @@ function attentionRow(item) {
 }
 
 function clarificationRow(item) {
-  const row = document.createElement("div");
+  const row = document.createElement("form");
   row.className = "att-row";
   const pill = document.createElement("span");
   pill.className = "pill pill-warn";
@@ -426,10 +481,13 @@ function clarificationRow(item) {
     clarDrafts[item.id] = input.value;
   });
   const send = document.createElement("button");
-  send.type = "button";
+  send.type = "submit";
   send.className = "btn btn-sm btn-primary";
   send.textContent = "Submit";
-  send.onclick = () => postClarification(item.id, input.value);
+  row.addEventListener("submit", (event) => {
+    event.preventDefault();
+    postClarification(item.id, input.value);
+  });
   row.append(pill, summary, input, send);
   return row;
 }

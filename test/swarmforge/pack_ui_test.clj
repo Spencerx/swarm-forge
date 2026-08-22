@@ -301,6 +301,16 @@
 (defn dashboard-html [root]
   (:out (pack-web root true "--test-html")))
 
+(defn dashboard-js-fn [html name]
+  (let [needle (str "function " name "(")
+        start (str/index-of html needle)]
+    (when start
+      (let [rest (subs html start)
+            cuts (remove nil? [(str/index-of rest "\nfunction " 1)
+                               (str/index-of rest "\nasync function " 1)])
+            nxt (when (seq cuts) (apply min cuts))]
+        (subs rest 0 (or nxt (count rest)))))))
+
 (deftest pack-dashboard-html-has-new-task-and-no-add-story
   ;; When serving dashboard.html
   ;; Then New Task exists, Add Story does not, Troubleshooter does not
@@ -1053,6 +1063,16 @@
     (is (str/includes? html "renderClarifications"))
     (is (not (str/includes? html "setSelectionRange")))))
 
+(deftest pack-dashboard-clarification-enter-submits
+  ;; Given a clarification answer box
+  ;; When the operator presses Enter
+  ;; Then the answer is submitted
+  (let [src (dashboard-js-fn (dashboard-html (tmp-dir)) "clarificationRow")]
+    (is (str/includes? src "createElement(\"form\")"))
+    (is (str/includes? src "addEventListener(\"submit\""))
+    (is (str/includes? src "preventDefault"))
+    (is (str/includes? src "postClarification"))))
+
 (deftest pack-dashboard-keeps-documents-menu-open-across-poll
   ;; Given dashboard HTML
   ;; Then an open Documents menu is restored after loadState
@@ -1094,7 +1114,7 @@
 (deftest pack-web-work-queue-lists-every-in-process-task
   ;; Given two in-process handoffs on architect
   ;; When --test-state
-  ;; Then the architect row names both tasks
+  ;; Then the row's task is the first name and tasks lists both
   (let [root (tmp-dir)
         roles ["specifier" "architect"]]
     (setup-pack! root roles)
@@ -1106,8 +1126,27 @@
                       :filename "11_from_cleaner_cs.handoff"})
     (let [row (some #(when (= "architect" (:role %)) %)
                     (:work_in_flight (web-state root)))]
-      (is (str/includes? (:task row) "HTW"))
-      (is (str/includes? (:task row) "Command Syntax")))))
+      (is (= "HTW" (:task row)))
+      (is (= ["HTW" "Command Syntax"] (:tasks row))))))
+
+(deftest pack-dashboard-batch-plus-lists-tasks-on-hover
+  ;; Given a work row with more than one task
+  ;; When the operator hovers the +
+  ;; Then a list of every task in the batch appears
+  (let [html (dashboard-html (tmp-dir))
+        src (dashboard-js-fn html "workRow")]
+    (is (str/includes? src "item.tasks"))
+    (is (str/includes? src "batch-more"))
+    (is (str/includes? src "mouseenter"))
+    (is (str/includes? html "batch-more"))))
+
+(deftest pack-dashboard-keeps-work-rows-across-poll
+  ;; Given dashboard HTML
+  ;; Then work rows are keyed and not rebuilt when the batch is unchanged
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "data-work-role"))
+    (is (str/includes? html "renderWork"))
+    (is (not (str/includes? html "rows.replaceChildren")))))
 
 (deftest pack-web-thermometer-heats-on-work-after-handoff-mail
   ;; Given a Codex pane whose only cut-point used to be an old › mail line
