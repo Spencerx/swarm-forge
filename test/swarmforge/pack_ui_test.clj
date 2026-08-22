@@ -522,7 +522,8 @@
                                "--test-post-chat" (str root) text)
           argv (read-argv argv-file)]
       (is (zero? (:exit result)))
-      (is (= text (last (first argv))))
+      (is (str/includes? (str (last (first argv))) text))
+      (is (re-find #"\[req-" (str (last (first argv)))))
       (is (not (str/starts-with? (str (last (first argv))) "Task:")))
       (is (= "C-m" (last (second argv))))
       (is (= "C-j" (last (nth argv 2)))))))
@@ -634,6 +635,11 @@
     (is (str/includes? html "data.work_in_flight"))
     (is (str/includes? html "item.state"))
     (is (str/includes? html "item.activity"))
+    (is (str/includes? html "data.chat"))
+    (is (str/includes? html "data-task-name"))
+    (is (str/includes? html "/task?name="))
+    (is (str/includes? html "Documents"))
+    (is (str/includes? html "resizable=yes"))
     (is (str/includes? html "/agent/"))
     (is (str/includes? html "setInterval(loadState"))
     (is (str/includes? html "id=\"error\""))
@@ -800,6 +806,105 @@
         (when (.isAlive daemon)
           (.destroyForcibly daemon))
         (stop-tmux! sock)))))
+
+(deftest pack-board-move-matches-task-name-ignoring-case
+  ;; Given board card HTW
+  ;; When pack_board move --name htw --lane coder
+  ;; Then the card HTW is in coder
+  (let [root (tmp-dir)]
+    (setup-pack! root)
+    (create-task root "HTW" "specifier")
+    (pack-board root true "move" "--root" (str root) "--name" "htw" "--lane" "coder")
+    (is (= "coder" (task-lane root "HTW")))))
+
+(deftest handoffd-moves-card-when-handoff-task-case-differs
+  ;; Given card HTW in coder
+  ;; When git_handoff coder→cleaner task htw is delivered
+  ;; Then HTW is in cleaner
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "HTW" "coder")
+                 (queue-handoff! root {:from "coder" :to "cleaner" :task "htw"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "cleaner" (task-lane root "HTW")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest handoffd-does-not-deliver-when-board-task-is-unknown
+  ;; Given card HTW and a handoff for other-task
+  ;; When delivered
+  ;; Then coder inbox stays empty and HTW stays in specifier
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "HTW" "coder")
+                 (queue-handoff! root {:from "coder" :to "cleaner" :task "other-task"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "coder" (task-lane root "HTW")))
+      (is (= [] (inbox-names root roles "cleaner")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest pack-web-shows-board-card-as-live-work
+  ;; Given card HTW in specifier and a live specifier session
+  ;; When pack_web --test-state
+  ;; Then specifier row is live with task HTW
+  (let [root (tmp-dir)
+        sock (do (setup-pack! root)
+                 (create-task root "HTW" "specifier")
+                 (start-tmux! root ["specifier"]))]
+    (try
+      (let [row (some #(when (= "specifier" (:role %)) %)
+                      (:work_in_flight (web-state root)))]
+        (is (= "HTW" (:task row)))
+        (is (= "live" (:state row))))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest pack-web-chat-persists-and-answers
+  ;; Given a pack root
+  ;; When POST /api/chat then pack_dashboard_request answer
+  ;; Then /api/state chat has the body and response
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))
+        answer (fs/path root "tmp" "answer.txt")]
+    (setup-pack! root)
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (write-file answer "the spec is ready\n")
+    (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                  "--test-post-chat" (str root) "status?")
+    (let [listed (run {:dir root}
+                      (script "pack_dashboard_request.sh")
+                      "list" "--root" (str root))
+          id (first (str/split (str/trim (:out listed)) #"\t"))]
+      (is (str/starts-with? id "req-"))
+      (run {:dir root} (script "pack_dashboard_request.sh") "answer" id (str answer))
+      (let [chat (:chat (web-state root))
+            row (first chat)]
+        (is (= "status?" (str/trim (:body row))))
+        (is (= "the spec is ready" (str/trim (:response row))))
+        (is (= "done" (:status row)))))))
+
+(deftest pack-web-serves-the-task-body
+  ;; Given New Task HTW with body
+  ;; When pack_web --test-task HTW
+  ;; Then it prints the name and body
+  (let [root (tmp-dir)
+        text "Find the stories in ~/junk/htw-stories and implement them."]
+    (setup-pack! root)
+    (pack-board root true
+                "create" "--root" (str root)
+                "--name" "HTW" "--lane" "specifier" "--text" text)
+    (let [result (pack-web root false "--test-task" (str root) "HTW")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "HTW"))
+      (is (str/includes? (:out result) text)))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]

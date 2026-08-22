@@ -116,7 +116,8 @@
   (first (str/split line #"\t")))
 
 (defn find-task [rows name]
-  (some #(when (= name (row-name %)) %) rows))
+  (let [want (str/lower-case (or name ""))]
+    (some #(when (= want (str/lower-case (or (row-name %) ""))) %) rows)))
 
 (defn task-row [name lane now]
   (str/join "\t" [name lane now now]))
@@ -146,8 +147,8 @@
 
 (defn rewrite-lane [line name lane]
   (let [[row-name _ created] (str/split line #"\t")]
-    (if (= name row-name)
-      (str/join "\t" [name lane created (timestamp)])
+    (if (= (str/lower-case (or name "")) (str/lower-case (or row-name "")))
+      (str/join "\t" [row-name lane created (timestamp)])
       line)))
 
 (defn set-lane! [opts lane]

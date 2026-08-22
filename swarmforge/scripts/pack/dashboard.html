@@ -25,6 +25,11 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto}
 .attention .tag{font-weight:700;text-transform:uppercase;font-size:10px;color:#8a5a0a;padding-top:4px}
 .att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin-bottom:4px}
+.menu{position:relative;display:inline-block}
+.menu-list{display:none;position:absolute;left:0;top:100%;z-index:20;min-width:12rem;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px 0}
+.menu.open .menu-list{display:block}
+.menu-list button{display:block;width:100%;text-align:left;border:0;background:none;padding:6px 10px;font:inherit;font-size:11px;cursor:pointer}
+.menu-list button:hover{background:#f0f2ee}
 .pill{display:inline-block;padding:1px 7px;border-radius:999px;font-size:10px;font-weight:600;background:var(--chip)}
 .pill-warn{background:#ffe2a8;color:#7a4e00}.pill-ok{background:var(--green-bg);color:var(--green)}
 .body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 8px minmax(220px,var(--rail));overflow:hidden}
@@ -177,6 +182,7 @@ function displayName(role) {
 function cardEl(task) {
   const card = document.createElement("article");
   card.className = "card";
+  card.setAttribute("data-task-name", task.name || "");
   const title = document.createElement("div");
   title.className = "title";
   const name = document.createElement("span");
@@ -189,6 +195,7 @@ function cardEl(task) {
   lane.textContent = task.lane;
   foot.appendChild(lane);
   card.append(title, foot);
+  card.onclick = () => openGrowable("/task?name=" + encodeURIComponent(task.name || ""), "task-" + (task.name || ""));
   return card;
 }
 
@@ -239,9 +246,13 @@ function age(iso) {
   return Math.round(hours / 24) + "d";
 }
 
-function openAgentWindow(url, name) {
+function openGrowable(url, name) {
   const sep = url.indexOf("?") >= 0 ? "&" : "?";
-  window.open(url + sep + "_open=" + Date.now(), name, "popup=yes,width=780,height=560");
+  window.open(url + sep + "_open=" + Date.now(), name, "resizable=yes,scrollbars=yes,width=780,height=560");
+}
+
+function openAgentWindow(url, name) {
+  openGrowable(url, name);
 }
 
 function stateIcon(state) {
@@ -313,13 +324,32 @@ async function viewDoc(path) {
   $("doc-layer").classList.add("open");
 }
 
-function artifactButton(path) {
+function artifactMenu(paths) {
+  const wrap = document.createElement("div");
+  wrap.className = "menu";
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn btn-sm";
-  btn.textContent = "View " + fileName(path);
-  btn.onclick = () => viewDoc(path);
-  return btn;
+  btn.textContent = "Documents";
+  const list = document.createElement("div");
+  list.className = "menu-list";
+  (paths || []).forEach((path) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.textContent = fileName(path);
+    item.onclick = (event) => {
+      event.stopPropagation();
+      wrap.classList.remove("open");
+      viewDoc(path);
+    };
+    list.appendChild(item);
+  });
+  btn.onclick = (event) => {
+    event.stopPropagation();
+    wrap.classList.toggle("open");
+  };
+  wrap.append(btn, list);
+  return wrap;
 }
 
 function approvalButton(item, action, label, className) {
@@ -340,7 +370,7 @@ function attentionRow(item) {
   const summary = document.createElement("span");
   summary.textContent = item.gate + " · " + item.task;
   row.append(pill, summary);
-  (item.artifacts || []).forEach((path) => row.appendChild(artifactButton(path)));
+  if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts));
   row.append(
     approvalButton(item, "approve", "Approve", "btn btn-sm btn-approve"),
     approvalButton(item, "reject", "Reject", "btn btn-sm")
@@ -364,6 +394,7 @@ async function loadState() {
     renderBoard(data);
     renderAttention(data);
     renderWork(data);
+    renderChat(data);
   } catch (_) {
     $("error").textContent = "Swarm disconnected";
   }
@@ -388,6 +419,23 @@ async function submitNewTask() {
   loadState();
 }
 
+function renderChat(data) {
+  const history = $("chat-history");
+  history.replaceChildren();
+  (data.chat || []).forEach((item) => {
+    const you = document.createElement("div");
+    you.className = "bubble-you";
+    you.textContent = item.body || "";
+    history.appendChild(you);
+    if (item.response) {
+      const reply = document.createElement("div");
+      reply.className = "bubble-ts";
+      reply.textContent = item.response;
+      history.appendChild(reply);
+    }
+  });
+}
+
 async function sendChat() {
   const text = $("chat-input").value.trim();
   if (!text) return;
@@ -396,11 +444,8 @@ async function sendChat() {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({text})
   });
-  const bubble = document.createElement("div");
-  bubble.className = "bubble-you";
-  bubble.textContent = text;
-  $("chat-history").appendChild(bubble);
   $("chat-input").value = "";
+  loadState();
 }
 
 async function teardownSwarm() {
@@ -437,6 +482,9 @@ $("chat-input").addEventListener("keydown", (event) => {
   }
 });
 document.addEventListener("click", (event) => {
+  if (!event.target.closest(".menu")) {
+    document.querySelectorAll(".menu.open").forEach((el) => el.classList.remove("open"));
+  }
   const btn = event.target.closest("[data-open-agent]");
   if (!btn) return;
   const role = btn.getAttribute("data-open-agent");

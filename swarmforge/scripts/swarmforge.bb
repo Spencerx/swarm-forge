@@ -261,7 +261,8 @@
    "swarm-cleanup.sh" "swarm-window-watchdog.sh" "swarm-window-watchdog.bb"
    "swarm-terminal-adapter.sh" "swarmforge.sh" "swarmforge.bb"
    "pack_board.sh" "pack_board.bb"
-   "pack_web.sh" "pack_web.bb"])
+   "pack_web.sh" "pack_web.bb"
+   "pack_dashboard_request.sh" "pack_dashboard_request.bb"])
 
 (def terminal-helpers
   ["terminal-app.sh" "iterm2.sh" "ghostty.sh" "windows-terminal.sh" "none.sh"])
@@ -401,7 +402,10 @@
          (require-ensure-lines tools)
          (parse-dry-check-lines tools)
          "- Write scratch files and handoff drafts in `./tmp/` in the assigned worktree.\n"
-         "- Do not use `/tmp` or `.swarmforge/handoffs/outbox/tmp/` as scratch.\n")))
+         "- Do not use `/tmp` or `.swarmforge/handoffs/outbox/tmp/` as scratch.\n"
+         "- Operator follow-ups arrive as `[id] text` in this pane. Answer with `pack_dashboard_request.sh answer <id> ./tmp/answer.txt`.\n"
+         "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n"
+         "- Use the existing board card name as `task:`. Do not invent a name.\n")))
 
 (defn write-agent-instruction-file! [role prompt-file]
   (spit (str prompt-file)

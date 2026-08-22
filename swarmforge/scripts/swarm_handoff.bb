@@ -96,6 +96,22 @@
       (infer-role-from-worktree)
       (exit! 1 "Set SWARMFORGE_ROLE.")))
 
+(defn board-card-in-lane [lane]
+  (let [file (fs/path (project-root) ".swarmforge" "board" "tasks.tsv")]
+    (when (fs/exists? file)
+      (some (fn [line]
+              (let [[name task-lane] (str/split line #"\t")]
+                (when (= lane task-lane)
+                  name)))
+            (str/split-lines (slurp (str file)))))))
+
+(defn with-board-task [headers sender]
+  (if-not (= "git_handoff" (get headers "type"))
+    headers
+    (if-let [card (board-card-in-lane sender)]
+      (assoc headers "task" card)
+      headers)))
+
 (defn role-worktree [role]
   (some (fn [line]
           (let [cols (str/split line #"\t")]
@@ -398,6 +414,7 @@
             headers (cond-> headers
                       (= "git_handoff" (get headers "type"))
                       (assoc "commit" (worktree-head)))
+            headers (with-board-task headers sender)
             ordered (if (and (= "git_handoff" (get headers "type"))
                              (not (some #{"commit"} ordered)))
                       (conj (vec ordered) "commit")

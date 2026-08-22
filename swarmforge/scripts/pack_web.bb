@@ -23,6 +23,7 @@
        "  pack_web.sh --test-pane <root> <role>\n"
        "  pack_web.sh --test-agent-page [role]\n"
        "  pack_web.sh --test-heat <root>\n"
+       "  pack_web.sh --test-task <root> <name>\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
 (def example-task-name "htw-console-app")
@@ -268,25 +269,88 @@
     (record-heat! role text)
     0))
 
-(defn queue-row [role from-file alive? activity]
-  {:task (or (:task from-file) "")
+(defn cards-in-lane [all-tasks lane]
+  (filterv #(= lane (:lane %)) all-tasks))
+
+(defn queue-row [role task-name busy? alive? activity updated]
+  {:task (or task-name "")
    :role role
-   :state (role-queue-state alive? (some? from-file))
-   :updated_at (or (:updated_at from-file) "")
+   :state (role-queue-state alive? busy?)
+   :updated_at (or updated "")
    :activity activity})
 
-(defn work-row-for-role [root socket row]
+(defn work-row-for-role [root socket row all-tasks]
   (let [role (first row)
         files (in-process-for-row row)
         path (first files)
         from-file (when path (work-entry role path))
+        card (first (cards-in-lane all-tasks role))
+        busy? (boolean (or path card))
         alive? (session-alive? socket (session-name row))
-        text (live-pane-text root role)]
-    (queue-row role from-file alive? (role-heat role (or alive? (some? *pane-text*)) text))))
+        text (live-pane-text root role)
+        task-name (or (:task from-file) (:name card) "")]
+    (queue-row role task-name busy? alive?
+               (role-heat role (or alive? (some? *pane-text*)) text)
+               (or (:updated_at from-file) (:updated_at card) ""))))
 
 (defn work-in-flight [root]
-  (let [socket (tmux-socket root)]
-    (mapv #(work-row-for-role root socket %) (role-rows root))))
+  (let [socket (tmux-socket root)
+        all-tasks (tasks root)]
+    (mapv #(work-row-for-role root socket % all-tasks) (role-rows root))))
+
+(defn chat-pending-dir [root]
+  (fs/path root ".swarmforge" "dashboard" "requests" "pending"))
+
+(defn chat-done-dir [root]
+  (fs/path root ".swarmforge" "dashboard" "requests" "done"))
+
+(defn chat-files [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(str/ends-with? (fs/file-name %) ".request"))
+         (sort-by str)
+         vec)
+    []))
+
+(defn parse-chat [path]
+  (let [raw (slurp (str path))
+        [header body] (str/split raw #"\n\n" 2)
+        headers (into {}
+                      (for [line (str/split-lines header)
+                            :let [[k v] (str/split line #": " 2)]
+                            :when (and k v)]
+                        [k v]))]
+    {:id (get headers "id")
+     :status (get headers "status")
+     :body (or body "")
+     :response (str/replace (get headers "response" "") #"\\n" "\n")
+     :created_at (get headers "created_at")}))
+
+(defn list-chat [root]
+  (vec (concat (map parse-chat (chat-files (chat-pending-dir root)))
+               (map parse-chat (chat-files (chat-done-dir root))))))
+
+(defn chat-id []
+  (str "req-" (str/replace (str (java.time.Instant/now)) #"[^0-9A-Za-z]" "")))
+
+(defn chat-wake [id text]
+  (if (str/includes? (or text "") "\n")
+    (str "[" id "]\n" text)
+    (str "[" id "] " text)))
+
+(defn write-chat-request! [root text]
+  (let [id (chat-id)
+        file (fs/path (chat-pending-dir root) (str id ".request"))]
+    (fs/create-dirs (fs/parent file))
+    (spit (str file)
+          (str "id: " id "\n"
+               "status: pending\n"
+               "created_at: " (.format java.time.format.DateTimeFormatter/ISO_INSTANT
+                                       (java.time.Instant/now)) "\n"
+               "\n"
+               text
+               (when-not (str/ends-with? text "\n") "\n")))
+    id))
 
 (defn dashboard-state [root]
   (let [master (master-role root)]
@@ -295,7 +359,8 @@
      :lanes (lanes root)
      :tasks (tasks root)
      :approvals (approvals root)
-     :work_in_flight (work-in-flight root)}))
+     :work_in_flight (work-in-flight root)
+     :chat (list-chat root)}))
 
 (defn require-root! [root]
   (when (str/blank? root)
@@ -325,8 +390,11 @@
     (json-ok)))
 
 (defn post-chat [root body]
-  (let [{:keys [text]} (json/parse-string (or body "{}") true)]
-    (inject-master! root (or text ""))
+  (let [{:keys [text]} (json/parse-string (or body "{}") true)
+        text (or text "")]
+    (when-not (str/blank? text)
+      (let [id (write-chat-request! root text)]
+        (inject-master! root (chat-wake id text))))
     (json-ok)))
 
 (defn pending-file [root id]
@@ -408,6 +476,22 @@
       {:status 200
        :headers {"Content-Type" "text/plain; charset=utf-8"}
        :body (slurp (str (existing-path root rel)))}
+      {:status 404 :body "Not found"})))
+
+(defn task-query-name [uri]
+  (when (str/starts-with? (or uri "") "/task")
+    (query-value uri "name")))
+
+(defn get-task [root uri]
+  (let [name (task-query-name uri)
+        file (when (and (not (str/blank? name))
+                        (not (str/includes? name "/"))
+                        (not (str/includes? name "..")))
+               (fs/path root ".swarmforge" "board" (str name ".txt")))]
+    (if (and file (fs/regular-file? file))
+      {:status 200
+       :headers {"Content-Type" "text/plain; charset=utf-8"}
+       :body (str name "\n\n" (slurp (str file)))}
       {:status 404 :body "Not found"})))
 
 (defn html-escape [value]
@@ -555,6 +639,9 @@
 
     (agent-role uri)
     (get-agent root uri)
+
+    (task-query-name uri)
+    (get-task root uri)
 
     (str/starts-with? (or uri "") "/doc")
     (get-doc root uri)
@@ -727,6 +814,14 @@
         (let [after (:activity (first (work-in-flight root)))]
           (println (json/generate-string {:before before :after after})))))))
 
+(defn test-task! [root name]
+  (when (str/blank? name)
+    (exit! 1 "Missing task name"))
+  (print (:body (handle-request (require-root! root)
+                                {:method "GET"
+                                 :uri (str "/task?name=" name)})))
+  (flush))
+
 (defn test-teardown! [root confirm]
   (binding [*sync-teardown?* true]
     (let [resp (handle-request (require-root! root)
@@ -789,6 +884,7 @@
     "--test-pane" (test-pane! (second args) (nth args 2 nil))
     "--test-agent-page" (test-agent-page! (second args))
     "--test-heat" (test-heat! (second args))
+    "--test-task" (test-task! (second args) (nth args 2 nil))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))

@@ -129,21 +129,26 @@
            (remove str/blank?)
            seq))
 
+(defn board-file []
+  (fs/path project-root ".swarmforge" "board" "tasks.tsv"))
+
 (defn pack-board! [& args]
   (let [script (str (fs/path script-dir "pack_board.sh"))
         result (apply sh (concat [script] args ["--root" (str project-root)]))]
     (when-not (zero? (:exit result))
-      (log! "pack-board-failed" args (:err result) (:out result)))))
+      (log! "pack-board-failed" args (:err result) (:out result))
+      (throw (ex-info (str/trim (str (:err result) "\n" (:out result))) result)))))
 
 (defn update-board! [headers]
-  (let [task (get headers "task")
-        recipients (recipient-list headers)]
-    (when (and (= "git_handoff" (get headers "type"))
-               (not (str/blank? task))
-               recipients)
-      (if (next recipients)
-        (pack-board! "done" "--name" task)
-        (pack-board! "move" "--name" task "--lane" (first recipients))))))
+  (when (fs/exists? (board-file))
+    (let [task (get headers "task")
+          recipients (recipient-list headers)]
+      (when (and (= "git_handoff" (get headers "type"))
+                 (not (str/blank? task))
+                 recipients)
+        (if (next recipients)
+          (pack-board! "done" "--name" task)
+          (pack-board! "move" "--name" task "--lane" (first recipients)))))))
 
 (defn archive-sender! [headers]
   (let [from (get headers "from")
@@ -194,6 +199,7 @@
     (if-not recipients
       (fail! path "missing to header")
       (do
+        (update-board! headers)
         (doseq [recipient recipients]
           (let [role-info (get roles recipient)]
             (when-not role-info
@@ -207,7 +213,6 @@
         (move-with-collision path
                              (fs/path (get-in roles [sender-role :worktree-path])
                                       ".swarmforge" "handoffs" "sent"))
-        (update-board! headers)
         (archive-sender! headers)
         (log! "delivered" (str path))))))
 

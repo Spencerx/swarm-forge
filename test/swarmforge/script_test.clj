@@ -165,7 +165,8 @@
   (let [result (run {:dir repo-root} (script "swarmforge.bb") "--test-required-helpers")
         names (set (str/split-lines (str/trim (:out result))))]
     (is (contains? names "pack_web.sh"))
-    (is (contains? names "pack_board.sh"))))
+    (is (contains? names "pack_board.sh"))
+    (is (contains? names "pack_dashboard_request.sh"))))
 
 (defn write-pack-conf! [root conf]
   (write-file (fs/path root "swarmforge/constitution.prompt") "Read articles.\n")
