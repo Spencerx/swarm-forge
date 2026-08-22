@@ -920,6 +920,13 @@
     (is (str/includes? html "scrollHeight"))
     (is (str/includes? html "firstPaint"))))
 
+(deftest pack-dashboard-updates-chat-without-rebuilding-history
+  ;; Given dashboard HTML
+  ;; Then chat turns are keyed and existing bubbles are not replaced
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "data-chat-id"))
+    (is (not (str/includes? html "history.replaceChildren")))))
+
 (deftest pack-dashboard-cards-show-im-status
   ;; Given dashboard HTML
   ;; Then cards render task.status from /api/state
@@ -1038,9 +1045,13 @@
 
 (deftest pack-dashboard-keeps-clarification-draft-across-poll
   ;; Given dashboard HTML
-  ;; Then the clarification answer box is remembered across loadState
+  ;; Then clarifications live in their own div and existing inputs are not rebuilt
   (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "clarDrafts"))))
+    (is (str/includes? html "id=\"attention-clarifications\""))
+    (is (str/includes? html "id=\"attention-approvals\""))
+    (is (str/includes? html "data-clar-id"))
+    (is (str/includes? html "renderClarifications"))
+    (is (not (str/includes? html "setSelectionRange")))))
 
 (deftest pack-dashboard-keeps-documents-menu-open-across-poll
   ;; Given dashboard HTML

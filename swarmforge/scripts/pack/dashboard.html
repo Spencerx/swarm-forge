@@ -104,7 +104,10 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 
   <div class="attention" id="attention">
     <div class="tag">Attention</div>
-    <div id="attention-rows"></div>
+    <div id="attention-rows">
+      <div id="attention-approvals"></div>
+      <div id="attention-clarifications"></div>
+    </div>
   </div>
 
   <div class="body">
@@ -417,6 +420,7 @@ function clarificationRow(item) {
   const input = document.createElement("input");
   input.type = "text";
   input.placeholder = "Answer…";
+  input.dataset.clarId = item.id || "";
   input.value = clarDrafts[item.id] || "";
   input.addEventListener("input", () => {
     clarDrafts[item.id] = input.value;
@@ -440,12 +444,32 @@ async function postClarification(id, text) {
   loadState();
 }
 
+function renderApprovals(items) {
+  const box = $("attention-approvals");
+  box.replaceChildren();
+  (items || []).forEach((item) => box.appendChild(attentionRow(item)));
+}
+
+function renderClarifications(items) {
+  const box = $("attention-clarifications");
+  const pending = (items || []).filter((item) => item.status === "pending");
+  const live = {};
+  pending.forEach((item) => {
+    live[item.id] = true;
+  });
+  [...box.querySelectorAll("[data-clar-id]")].forEach((input) => {
+    if (!live[input.dataset.clarId]) input.closest(".att-row").remove();
+  });
+  pending.forEach((item) => {
+    if (!box.querySelector("[data-clar-id=\"" + item.id + "\"]")) {
+      box.appendChild(clarificationRow(item));
+    }
+  });
+}
+
 function renderAttention(data) {
-  const rows = $("attention-rows");
-  rows.replaceChildren();
-  (data.approvals || []).forEach((item) => rows.appendChild(attentionRow(item)));
-  (data.clarifications || []).filter((item) => item.status === "pending")
-    .forEach((item) => rows.appendChild(clarificationRow(item)));
+  renderApprovals(data.approvals);
+  renderClarifications(data.clarifications);
 }
 
 async function loadState() {
@@ -488,26 +512,56 @@ function chatToEnd() {
   const history = $("chat-history");
   history.scrollTop = history.scrollHeight;
 }
+
+function chatTurn(item) {
+  const wrap = document.createElement("div");
+  wrap.dataset.chatId = item.id || "";
+  const you = document.createElement("div");
+  you.className = "bubble-you";
+  you.textContent = item.body || "";
+  wrap.appendChild(you);
+  if (item.response) {
+    const reply = document.createElement("div");
+    reply.className = "bubble-ts";
+    reply.textContent = item.response;
+    wrap.appendChild(reply);
+  }
+  return wrap;
+}
+
 function renderChat(data) {
   const history = $("chat-history");
-  history.replaceChildren();
-  (data.chat || []).forEach((item) => {
-    const you = document.createElement("div");
-    you.className = "bubble-you";
-    you.textContent = item.body || "";
-    history.appendChild(you);
-    if (item.response) {
-      const reply = document.createElement("div");
-      reply.className = "bubble-ts";
+  const items = data.chat || [];
+  const nearEnd = firstPaint
+    || (history.scrollHeight - history.scrollTop - history.clientHeight) <= 64;
+  const live = {};
+  items.forEach((item) => {
+    live[item.id] = true;
+  });
+  [...history.querySelectorAll("[data-chat-id]")].forEach((el) => {
+    if (!live[el.dataset.chatId]) el.remove();
+  });
+  items.forEach((item) => {
+    let wrap = history.querySelector("[data-chat-id=\"" + item.id + "\"]");
+    if (!wrap) {
+      history.appendChild(chatTurn(item));
+      return;
+    }
+    const reply = wrap.querySelector(".bubble-ts");
+    if (item.response && !reply) {
+      const next = document.createElement("div");
+      next.className = "bubble-ts";
+      next.textContent = item.response;
+      wrap.appendChild(next);
+    } else if (item.response && reply && reply.textContent !== item.response) {
       reply.textContent = item.response;
-      history.appendChild(reply);
     }
   });
-  if (firstPaint || (history.scrollHeight - history.scrollTop - history.clientHeight) <= 64) {
+  if (nearEnd) {
     chatToEnd();
     requestAnimationFrame(chatToEnd);
-    firstPaint = false;
   }
+  firstPaint = false;
 }
 
 async function sendChat() {

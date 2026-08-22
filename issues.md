@@ -1,4 +1,4 @@
-1. UI should pop up before sessions are started.
+1. ~~UI should pop up before sessions are started.~~
 
 2. I can't type into the answer box in the clarification request because every refresh clears what I typed.
 
