@@ -32,17 +32,23 @@
 (defn sq [value]
   (str "'" (str/replace (str value) #"'" "'\"'\"'") "'"))
 
+(defn roles-at? [root]
+  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+
+(defn git-common-dir []
+  (let [git (sh/sh "git" "rev-parse" "--git-common-dir")]
+    (when (zero? (:exit git))
+      (let [path (fs/path (str/trim (:out git)))]
+        (str (if (fs/absolute? path) path (fs/absolutize path)))))))
+
 (defn project-root []
-  (let [cwd (fs/cwd)
-        local (fs/path cwd ".swarmforge" "roles.tsv")]
-    (if (fs/exists? local)
-      cwd
+  (or (let [parent (some-> (git-common-dir) fs/parent str)]
+        (when (roles-at? parent) parent))
       (let [git (sh/sh "git" "rev-parse" "--show-toplevel")
-            root (when (zero? (:exit git))
-                   (fs/path (str/trim (:out git))))]
-        (if (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv")))
-          root
-          (exit! 1 "Cannot find SwarmForge project root"))))))
+            root (when (zero? (:exit git)) (str/trim (:out git)))]
+        (when (roles-at? root) root))
+      (when (roles-at? (fs/cwd)) (fs/cwd))
+      (exit! 1 "Cannot find SwarmForge project root")))
 
 (defn tool-spec [tool]
   (or (get catalog tool)

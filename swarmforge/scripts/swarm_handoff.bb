@@ -56,17 +56,16 @@
           (str (fs/path path))
           (str (fs/absolutize path)))))))
 
+(defn roles-at? [root]
+  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+
 (defn project-root []
-  (if-let [root (git-root)]
-    (if (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))
-      root
-      (if-let [common (git-common-dir)]
-        (let [candidate (str (fs/parent common))]
-          (if (fs/exists? (fs/path candidate ".swarmforge" "roles.tsv"))
-            candidate
-            (exit! 1 "Cannot find SwarmForge project root")))
-        (exit! 1 "Cannot find SwarmForge project root")))
-    (exit! 1 "Cannot find SwarmForge project root")))
+  (or (let [common (git-common-dir)
+            parent (when common (str (fs/parent common)))]
+        (when (roles-at? parent) parent))
+      (when (roles-at? (git-root)) (git-root))
+      (when (roles-at? (fs/cwd)) (str (fs/cwd)))
+      (exit! 1 "Cannot find SwarmForge project root")))
 
 (defn roles-file []
   (fs/path (project-root) ".swarmforge" "roles.tsv"))
@@ -148,12 +147,19 @@
 (defn commit-on-sender-branch? [sha]
   (zero? (:exit (command (git-cwd) "git" "merge-base" "--is-ancestor" sha "HEAD"))))
 
-(defn commit-artifacts [sha]
-  (->> (command (git-cwd) "git" "diff-tree" "--root" "--no-commit-id" "--name-only" "-r" sha)
-       :out
+(defn named-files [result]
+  (->> (:out result)
        str/split-lines
        (remove str/blank?)
+       distinct
        vec))
+
+(defn commit-artifacts [sha]
+  (let [against-parent (command (git-cwd) "git" "diff" "--name-only" (str sha "^") sha)]
+    (if (zero? (:exit against-parent))
+      (named-files against-parent)
+      (named-files (command (git-cwd) "git" "diff-tree" "--root"
+                            "--no-commit-id" "--name-only" "-r" sha)))))
 
 (defn state-dir []
   (fs/path (project-root) ".swarmforge" "handoffs"))

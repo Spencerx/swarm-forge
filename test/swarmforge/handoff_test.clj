@@ -407,7 +407,7 @@
       (is (not (str/includes? content "artifacts: none"))))))
 
 (deftest swarm-handoff-refuses-a-merge-with-no-changed-files
-  ;; Given HEAD is a merge whose diff-tree is empty
+  ;; Given HEAD is a merge whose first-parent diff is empty
   ;; When swarm_handoff queues a git_handoff
   ;; Then it refuses and does not write artifacts: none
   (let [root (tmp-dir)
@@ -418,10 +418,7 @@
         _ (run {:dir root} "git" "add" "side.md")
         _ (run {:dir root} "git" "commit" "-q" "-m" "Side")
         _ (run {:dir root} "git" "checkout" "-q" "master")
-        _ (write-file (fs/path root "main.md") "main\n")
-        _ (run {:dir root} "git" "add" "main.md")
-        _ (run {:dir root} "git" "commit" "-q" "-m" "Main")
-        _ (run {:dir root} "git" "merge" "-q" "--no-edit" "side")
+        _ (run {:dir root} "git" "merge" "-q" "--no-ff" "-s" "ours" "-m" "Ours" "side")
         draft (fs/path root "tmp" "merge.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: merge-empty\n")
     (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
@@ -617,6 +614,57 @@
       (is (zero? (:exit result)))
       (is (str/includes? (str content) (str "merge_and_process sender " sha)))
       (is (not (str/includes? (str content) "Please merge this and run the tests."))))))
+
+(deftest swarm-handoff-from-worktree-uses-master-outbox-when-roles-copied
+  ;; Given a sender worktree with a copied roles.tsv
+  ;; When swarm_handoff queues a git_handoff there
+  ;; Then the file is on the master project outbox
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        wt (add-worktree! root "sender")
+        _ (setup-project! root {"sender" "task" "receiver" "task"})
+        roles (format "sender\tsender\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                      wt root)
+        _ (write-file (fs/path root ".swarmforge" "roles.tsv") roles)
+        _ (write-file (fs/path wt ".swarmforge" "roles.tsv") roles)
+        _ (write-file (fs/path wt "slice.md") "from the worktree\n")
+        _ (run {:dir wt} "git" "add" "slice.md")
+        _ (run {:dir wt} "git" "commit" "-q" "-m" "Worktree slice")
+        draft (fs/path wt "tmp" "copied-roles.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: copied-roles\n")
+    (let [result (run {:dir wt :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))]
+      (is (zero? (:exit result)))
+      (is (str/starts-with? (str (fs/canonicalize queued))
+                           (str (fs/canonicalize (fs/path root ".swarmforge" "handoffs" "outbox")))))
+      (is (not (str/includes? queued "/.worktrees/"))))))
+
+(deftest swarm-handoff-queues-a-merge-with-first-parent-files
+  ;; Given HEAD is a merge that added a file versus the first parent
+  ;; When swarm_handoff queues a git_handoff
+  ;; Then it succeeds and artifacts lists that file
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (run {:dir root} "git" "checkout" "-q" "-b" "side")
+        _ (write-file (fs/path root "side.md") "side\n")
+        _ (run {:dir root} "git" "add" "side.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Side")
+        _ (run {:dir root} "git" "checkout" "-q" "master")
+        _ (write-file (fs/path root "main.md") "main\n")
+        _ (run {:dir root} "git" "add" "main.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Main")
+        _ (run {:dir root} "git" "merge" "-q" "--no-edit" "side")
+        draft (fs/path root "tmp" "merge-files.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: merge-files\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "artifacts:"))
+      (is (str/includes? (str content) "side.md")))))
 
 (deftest helpers-refuse-wrong-current-work-shape
   (let [root (tmp-dir)

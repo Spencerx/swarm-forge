@@ -332,9 +332,13 @@ async function viewDoc(path) {
   $("doc-layer").classList.add("open");
 }
 
-function artifactMenu(paths) {
+const openDocMenus = new Set();
+const clarDrafts = {};
+
+function artifactMenu(paths, id) {
   const wrap = document.createElement("div");
   wrap.className = "menu";
+  wrap.dataset.docId = id || "";
   const btn = document.createElement("button");
   btn.type = "button";
   btn.className = "btn btn-sm";
@@ -348,20 +352,31 @@ function artifactMenu(paths) {
     item.onclick = (event) => {
       event.stopPropagation();
       wrap.classList.remove("open");
+      if (id) openDocMenus.delete(id);
       viewDoc(path);
     };
     list.appendChild(item);
   });
+  const place = () => {
+    const box = btn.getBoundingClientRect();
+    list.style.top = box.bottom + "px";
+    list.style.left = box.left + "px";
+  };
   btn.onclick = (event) => {
     event.stopPropagation();
     wrap.classList.toggle("open");
     if (wrap.classList.contains("open")) {
-      const box = btn.getBoundingClientRect();
-      list.style.top = box.bottom + "px";
-      list.style.left = box.left + "px";
+      if (id) openDocMenus.add(id);
+      place();
+    } else if (id) {
+      openDocMenus.delete(id);
     }
   };
   wrap.append(btn, list);
+  if (id && openDocMenus.has(id)) {
+    wrap.classList.add("open");
+    requestAnimationFrame(place);
+  }
   return wrap;
 }
 
@@ -383,7 +398,7 @@ function attentionRow(item) {
   const summary = document.createElement("span");
   summary.textContent = item.gate + " · " + item.task;
   row.append(pill, summary);
-  if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts));
+  if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts, item.id));
   row.append(
     approvalButton(item, "approve", "Approve", "btn btn-sm btn-approve"),
     approvalButton(item, "reject", "Reject", "btn btn-sm")
@@ -396,12 +411,16 @@ function clarificationRow(item) {
   row.className = "att-row";
   const pill = document.createElement("span");
   pill.className = "pill pill-warn";
-  pill.textContent = "Request clarification";
+  pill.textContent = "Clarification requested from: " + (item.role || "agent");
   const summary = document.createElement("span");
   summary.textContent = item.body || "";
   const input = document.createElement("input");
   input.type = "text";
   input.placeholder = "Answer…";
+  input.value = clarDrafts[item.id] || "";
+  input.addEventListener("input", () => {
+    clarDrafts[item.id] = input.value;
+  });
   const send = document.createElement("button");
   send.type = "button";
   send.className = "btn btn-sm btn-primary";
@@ -538,7 +557,10 @@ $("chat-input").addEventListener("keydown", (event) => {
 });
 document.addEventListener("click", (event) => {
   if (!event.target.closest(".menu")) {
-    document.querySelectorAll(".menu.open").forEach((el) => el.classList.remove("open"));
+    document.querySelectorAll(".menu.open").forEach((el) => {
+      el.classList.remove("open");
+      if (el.dataset.docId) openDocMenus.delete(el.dataset.docId);
+    });
   }
   const btn = event.target.closest("[data-open-agent]");
   if (!btn) return;

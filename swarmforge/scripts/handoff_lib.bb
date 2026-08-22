@@ -22,23 +22,21 @@
 (defn inbox-dir []
   (fs/path (state-dir) "inbox"))
 
+(defn roles-at? [root]
+  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+
+(defn git-common-dir []
+  (let [out (:out (babashka.process/sh {:continue true} "git" "rev-parse" "--git-common-dir"))]
+    (when-not (str/blank? out)
+      (let [path (fs/path (str/trim out))]
+        (str (if (fs/absolute? path) path (fs/absolutize path)))))))
+
 (defn project-root []
-  (let [cwd (fs/cwd)
-        direct (fs/path cwd ".swarmforge" "roles.tsv")]
-    (if (fs/exists? direct)
-      cwd
-      (let [git-root (:out (babashka.process/sh {:continue true} "git" "rev-parse" "--show-toplevel"))
-            root (when-not (str/blank? git-root) (fs/path (str/trim git-root)))]
-        (if (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv")))
-          root
-          (let [common (:out (babashka.process/sh {:continue true} "git" "rev-parse" "--git-common-dir"))
-                common-path (when-not (str/blank? common)
-                              (let [path (fs/path (str/trim common))]
-                                (if (fs/absolute? path) path (fs/absolutize path))))
-                common-parent (some-> common-path fs/parent)]
-            (if (and common-parent (fs/exists? (fs/path common-parent ".swarmforge" "roles.tsv")))
-              common-parent
-              (throw (ex-info "Cannot find SwarmForge project root" {:exit 1})))))))))
+  (or (let [parent (some-> (git-common-dir) fs/parent str)]
+        (when (roles-at? parent) parent))
+      (when (roles-at? (git-toplevel)) (git-toplevel))
+      (when (roles-at? (fs/cwd)) (fs/cwd))
+      (throw (ex-info "Cannot find SwarmForge project root" {:exit 1}))))
 
 (defn roles-file []
   (fs/path (project-root) ".swarmforge" "roles.tsv"))

@@ -458,7 +458,48 @@
         (is (not (str/includes? prompt "swarmforge/sessions.tsv")))
         (is (str/includes? prompt "ready_for_next.sh"))
         (is (str/includes? prompt "swarm_handoff.sh ./tmp/"))
-        (is (str/includes? prompt "pack_dashboard_request.sh clarify")))
+        (is (str/includes? prompt "pack_dashboard_request.sh clarify"))
+        (is (str/includes? prompt "Do not search the worktree for"))
+        (is (str/includes? prompt "./swarmforge/scripts/"))
+        (is (str/includes? prompt "crap4clj"))
+        (is (str/includes? prompt "clj-mutate"))
+        (is (str/includes? prompt "Do not invent"))
+        (is (str/includes? prompt "Do not ask the operator what new feature"))
+        (is (str/includes? prompt "Do not import behavior from sibling")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest tool-startup-qa-forbids-duplicate-commit-fanout
+  ;; Given a QA assignment
+  ;; When SwarmForge writes the instruction file
+  ;; Then Tool Startup forbids two git_handoffs of the same SHA
+  (let [root (tmp-dir)]
+    (try
+      (let [prompt (str/trim (:out (run {:dir root}
+                                        (script "swarmforge.bb")
+                                        "--test-instruction-file"
+                                        (str root)
+                                        "QA")))]
+        (is (str/includes? prompt "Do not send two git_handoffs of the same SHA")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarmforge-start-order-opens-dashboard-before-agents
+  ;; Given a pack
+  ;; When --test-start-order
+  ;; Then pack_web starts before agents
+  (let [root (tmp-dir)]
+    (try
+      (write-pack-conf! root
+                        (str "window-invisible specifier codex master\n"
+                             "window coder codex coder\n"))
+      (let [out (:out (run {:dir root} (script "swarmforge.bb")
+                           "--test-start-order" (str root)))
+            pack (.indexOf out "pack_web start")
+            agents (.indexOf out "start-agents")]
+        (is (>= pack 0))
+        (is (>= agents 0))
+        (is (< pack agents)))
       (finally
         (fs/delete-tree root)))))
 

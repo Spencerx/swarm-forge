@@ -930,7 +930,7 @@
   ;; Given dashboard HTML
   ;; Then Attention can show Request clarification with a text box
   (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "Request clarification"))
+    (is (str/includes? html "Clarification requested from:"))
     (is (str/includes? html "data.clarifications"))
     (is (str/includes? html "/api/clarifications/"))))
 
@@ -970,6 +970,20 @@
       (is (zero? (:exit result)))
       (is (= "HTW" (:name card)))
       (is (str/includes? (str (:status card)) "I'm idle, so I'm running ready_for_next.sh")))))
+
+(deftest pack-web-card-status-includes-continue-sentences
+  ;; Given a specifier card and a pane tail whose last matching sentence uses continue
+  ;; When --test-status-pane
+  ;; Then that task's status is that sentence
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")]
+    (let [result (pack-web-env root {} "--test-status-pane" (str root)
+                               "Working on HTW.\nI'll continue with the cave map.\nesc to interrupt · 3s\n")
+          state (json/parse-string (:out result) true)
+          card (first (:tasks state))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str (:status card)) "I'll continue with the cave map.")))))
 
 (deftest pack-web-clarification-posts-to-attention-and-answers-into-the-role
   ;; Given QA posts a clarification question
@@ -1015,6 +1029,116 @@
       (is (zero? (:exit result)))
       (is (str/includes? (:out result) "HTW"))
       (is (str/includes? (:out result) text)))))
+
+(deftest pack-dashboard-stamps-clarification-with-the-agent
+  ;; Given dashboard HTML
+  ;; Then Attention names the requesting agent
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "Clarification requested from:"))))
+
+(deftest pack-dashboard-keeps-clarification-draft-across-poll
+  ;; Given dashboard HTML
+  ;; Then the clarification answer box is remembered across loadState
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "clarDrafts"))))
+
+(deftest pack-dashboard-keeps-documents-menu-open-across-poll
+  ;; Given dashboard HTML
+  ;; Then an open Documents menu is restored after loadState
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "openDocMenus"))))
+
+(deftest pack-web-card-status-matches-unicode-im-and-i-keywords
+  ;; Given a pane with Unicode I’m and let me
+  ;; When --test-status-pane
+  ;; Then those sentences can be card status
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        im (pack-web-env root {} "--test-status-pane" (str root)
+                         "I’m merging the QA handoff.\nesc to interrupt · 1s\n")
+        let-me (pack-web-env root {} "--test-status-pane" (str root)
+                             "Let me inspect the conflicts.\nesc to interrupt · 1s\n")
+        handoff (pack-web-env root {} "--test-status-pane" (str root)
+                              "HANDOFF queued to cleaner.\nesc to interrupt · 1s\n")]
+    (is (str/includes? (:out im) "merging the QA handoff"))
+    (is (str/includes? (:out let-me) "Let me inspect the conflicts"))
+    (is (str/includes? (:out handoff) "HANDOFF queued to cleaner"))))
+
+(deftest pack-web-card-status-stays-until-replaced
+  ;; Given a status sentence then a pane with no status keywords
+  ;; When --test-status-persist
+  ;; Then the first sentence remains
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-persist" (str root)
+                             "I'm working on HTW.\n"
+                             "esc to interrupt · 9s\n")
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:first body)) "I'm working on HTW"))
+    (is (= (:first body) (:second body)))))
+
+(deftest pack-web-work-queue-lists-every-in-process-task
+  ;; Given two in-process handoffs on architect
+  ;; When --test-state
+  ;; Then the architect row names both tasks
+  (let [root (tmp-dir)
+        roles ["specifier" "architect"]]
+    (setup-pack! root roles)
+    (put-in-process! root roles "architect"
+                     {:from "cleaner" :task "HTW"
+                      :filename "10_from_cleaner_htw.handoff"})
+    (put-in-process! root roles "architect"
+                     {:from "cleaner" :task "Command Syntax"
+                      :filename "11_from_cleaner_cs.handoff"})
+    (let [row (some #(when (= "architect" (:role %)) %)
+                    (:work_in_flight (web-state root)))]
+      (is (str/includes? (:task row) "HTW"))
+      (is (str/includes? (:task row) "Command Syntax")))))
+
+(deftest pack-web-thermometer-heats-on-work-after-handoff-mail
+  ;; Given a Codex pane whose only cut-point used to be an old › mail line
+  ;; When later transcript lines change
+  ;; Then heat rises
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier"])
+        result (pack-web root false "--test-heat-mail" (str root))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (< (:before body) (:after body)))))
+
+(deftest pack-web-thermometer-heats-on-collapsed-transcript-counts
+  ;; Given Codex collapsed output whose +N line changes
+  ;; When --test-heat-collapse
+  ;; Then heat rises
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier"])
+        result (pack-web root false "--test-heat-collapse" (str root))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (< (:before body) (:after body)))))
+
+(deftest pack-web-clarification-answer-echoes-the-question
+  ;; Given QA asked a clarification
+  ;; When the operator answers
+  ;; Then the injected pane text includes the question and Clarification requested from
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        question (fs/path root "tmp" "question.txt")]
+    (setup-pack! root ["QA"])
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str (fs/path root "tmux.sock") "\n"))
+    (write-file question "Does the bat drop to any of 20 rooms?\n")
+    (let [id (str/trim (:out (run {:dir root :env {"SWARMFORGE_ROLE" "QA"}}
+                                  (script "pack_dashboard_request.sh")
+                                  "clarify" (str question))))]
+      (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.")
+      (let [argv (slurp argv-file)]
+        (is (str/includes? argv "Clarification requested from: QA"))
+        (is (str/includes? argv "Does the bat drop to any of 20 rooms?"))
+        (is (str/includes? argv "Yes, 1 to 20."))))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]

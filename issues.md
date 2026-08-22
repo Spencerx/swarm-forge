@@ -1,51 +1,31 @@
-1. In approval window, the documents menu is under the swimlanes and cannot be seen.
+1. UI should pop up before sessions are started.
 
-The Documents list is `position: absolute; top: 100%` inside Attention. Attention is `max-height: 120px; overflow: auto`. The dropdown therefore opens downward into the board and is clipped by that overflow; `z-index: 20` cannot paint over a sibling that sits below a clipping ancestor. The operator cannot pick a Gherkin/QA file.
+2. I can't type into the answer box in the clarification request because every refresh clears what I typed.
 
-**Change:** the menu must paint above the swimlanes (fixed/popover positioning, or Attention `overflow: visible` while open). Do not clip it inside the 120px strip.
+3. Add I, I'll, I'm, I've, let me, run, hand off, handing off, and HANDOFF to the keywords that are used to show status in the cards. Match both ASCII and Unicode apostrophes in I'm / I'll / I've (I'll, I'm, I've and I’ll, I’m, I’ve). Keywords that do not include I are case-insensitive. Status lines should remain in the card until replaced by another.
 
-**Where:** `pack/dashboard.html` Attention `.menu` / `.attention` overflow and stacking.
+4. Clarification requests should be stamped with the agent making the request. The attention line should say Clarification requested from: <agent>. The response should be sent back to that agent with a copy of the request.
 
-2. Thermometer should be based on the difference in the last 20 lines of the session. That difference should be measured by counting the number of lines that are different, regardless of the position of those lines in the tail.
+5. The specifier should not ask for clarification regarding what new feature or what to specify.
 
-Today heat hashes the whole stripped pane. Any hash change raises heat by 1; an unchanged hash decays by 1. A scroll or reorder of the same lines looks like full activity. Squad already samples `-S -20` for heat; pack does not.
+6. The menu that pops up when I hit Documents disappears at every refresh. It should not.
 
-**Change:** take the last 20 lines (after the Codex working filter). Compare to the previous tail as **bags of lines**, not as a string and not in order. Heat is how many of those 20 lines are not in the previous bag (and the reverse: lines that disappeared). Map that count onto the 0–6 bars. Identical lines in a different order are zero difference.
+7. Coder hunted the board in the worktree. After receive, it `rg`'d `.swarmforge/board/tasks.tsv` in the coder worktree. That file lives only on master. Cleaner did the same hunt (`Explored` / Read `tasks.tsv`) on startup. The helper already had `task: HTW` from the inbound handoff and fills `task:` from the sender-lane card. Tool Startup already names `.swarmforge/board/tasks.tsv` on the project. The agent should not search the worktree for the card name.
 
-**Where:** `pack_web.bb` `record-heat!` / pane tail; keep Codex chrome strip before the count.
+8. Coder appended a prose payload after the git_handoff headers ("Implemented Hunt the Wumpus… Please clean and review."). Cleaner did the same ("Cleaned Hunt the Wumpus implementation structure for architectural review."). The helper stripped both and queued; delivered bodies were only `merge_and_process`. Agents still write a body. Keep stripping; do not make the agent remember "headers only."
 
-3. Specifier wrote `priority: normal`. The helper requires two digits `00`–`99` (`priority: NN` in the sample). `NN` is not a filled default, so the first draft was invalid. Fill `priority: 50` the same way the helper fills `commit`. Do not make the agent invent a two-digit code.
+9. Cleaner invoked helpers as `./swarmforge/scripts/ready_for_next.sh` and `./swarmforge/scripts/swarm_handoff.sh ./tmp/architect_handoff.txt` instead of the PATH names. Tool Startup already says receive with `ready_for_next.sh` and send with `swarm_handoff.sh ./tmp/<draft>`, and not to search the tree. The worktree `swarmforge/scripts` is already on PATH. Agents reconstruct a relative path into the copied scripts dir. Same class as the `rg` hunt for those scripts.
 
-4. Specifier looked for `swarmforge/sessions.tsv` to find the board card name. That file is `.swarmforge/sessions.tsv` (tmux sessions), not the board. The card list is `.swarmforge/board/tasks.tsv`. Name that path in Tool Startup. The helper already fills `task:` from the card in the sender lane; the agent should not hunt session files for the name.
+10. `swarm_handoff` from a role worktree queued into the **worktree** outbox, not master's. `git rev-parse --show-toplevel` in a worktree is the worktree path. Startup copies `.swarmforge/roles.tsv` into each worktree, so `project-root` sees that file and stops. Sequence, sent, failed, and outbox then live under `.worktrees/<role>/.swarmforge/handoffs/`. Master's board and `pending_approval` are not that tree. `handoffd` still delivered coder and cleaner because it concatenates every role worktree outbox plus the project outbox — that hides the split. Project root for helpers must be the directory whose worktree name is `master` (the git common dir's parent with `roles.tsv`), not "any checkout that has a copied `roles.tsv`."
 
-5. Specifier and coder both appended a prose payload after the `git_handoff` headers. The helper generates that payload (`merge_and_process …`). Any non-blank line after the header block is `HANDOFF INVALID`. Constitution already says headers only; agents still write a body. Ignore/strip draft payload the same way the helper fills `commit` and should fill `priority`. Do not make the agent remember “no body.”
+11. Specifier on Holy Hand Grenade grepped and read other junk projects (`~/junk/HTWSF`, `~/junk/experiments/htw-6-clj-vid`) for prior HHG specs. The New Task / board card already had the throw, tick, and blast rules. Specify from the card and the current product tree. Do not import behavior from sibling experiments.
 
-6. Architect `rg`’d the worktree for `ready_for_next` / `swarm_handoff` / `done_with_current` instead of running the names already on PATH. Tool Startup names `swarm_tool.sh require` / `ensure` exactly, but not the receive/send helpers, so the agent reconstructs a search. Same class as the APS `$HOME` hunt.
+12. Architect Command Syntax architecture landed in a merge commit (`Fit one-line M/S commands into the session interpreter`, including `htw.command` / session). `swarm_handoff` refused it: `Result commit … has no changed files`. The helper fills `artifacts` from `git diff-tree -r <sha>` with no `-m`; that printout is empty on a merge even when `git show` lists the files. Architect then made a follow-up non-merge commit of command-module tests so the retry would queue. Delivered `artifacts:` were only those two test files. The git objects were not lost: the follow-up SHA is a child of the merge, `merge_and_process` merges the commit (not the artifacts list), and hardender received the architecture. `artifacts:` still lied. Same refusal, same dummy follow-up, on later merges: architect Holy Hand Grenade (`40b3ea5` → `f5fdd9c` is only `present_test.clj`); cleaner Command Syntax and Holy Hand Grenade (`c83c93c` / `9907186` → test-rename commits); hardender Holy Hand Grenade (`5dd61f9` → extra `command_test` lines). Fill artifacts from the merge's first-parent diff (or otherwise treat a merge with real first-parent changes as having files). Do not force a dummy extra commit to make the helper accept the handoff.
 
-**Change:** Tool Startup names the exact argv: receive with `ready_for_next.sh`, send with `swarm_handoff.sh ./tmp/<draft>`. Do not search the tree or `$HOME` for those scripts.
+13. QA processed Command Syntax and Holy Hand Grenade as one batch, made one commit (`981ff0d`), and ran `swarm_handoff` twice with different `task:` names. Both bodies are `merge_and_process QA 981ff0d`. Downstream each role merged that SHA twice. One commit for a batch should be one fan-out, or each batch item should have its own commit. Do not send two git_handoffs of the same SHA.
 
-**Where:** `swarmforge.bb` `tool-startup-section`.
+14. Hardender thermometer stays at 0 while the Codex pane is busy. Heat is a bag-diff of the last 20 lines after Codex sampling. That sampler cuts at the last line starting with `› ` (guillemet plus space), on the theory that it is the input box. Codex prints old user and inject lines that way (`› You have new handoff mail…`). The live prompt is bare `›` with no space, so it does not match. The cut was hundreds of lines up; the last-20 bag was frozen mutation survivors. This path is Codex/ChatGPT only. Grok already pops the last line of a ~24-line snapshot and does not use `›`. Fix the Codex sampler: strip only trailing chrome from the bottom (blanks, live `›` / `› ` prompt, model footer, tab-to-queue, context-left). Do not scan the whole buffer for `› `. Keep ignoring a Working timer that is the only change (`• Working (3s)` → `(4s)`). Drop `ctrl + t to view transcript` and `gpt-` from that ignore list; those are live collapsed command lines and belong in the bag.
 
-7. The first command typed in the Specifier composer shows at the **top** of the chat output. It should sit at the **bottom** of that pane. Later command + reply already appear at the bottom.
+15. When an agent is working on a batch, the Working queue should list all the tasks in that batch. It currently shows one name: the first in-process handoff, or else the first board card in the lane.
 
-`#chat-history` is a column that starts at the top. The first bubble therefore hugs the top of the empty box. After more turns the stack is long enough that the live end looks like “the bottom.” There is no stick-to-bottom on first paint (`renderChat` only `replaceChildren`).
-
-**Change:** the output area always pins the latest turn to the bottom, including the first operator line before any reply. Same as squad TS chat (stick to end on first paint and when the operator is already at the bottom).
-
-**Where:** `pack/dashboard.html` `#chat-history` / `renderChat`.
-
-8. Cards should show the agent’s status. Status is the sentence in the session tail that contains `I'm`.
-
-Board cards today are name + lane only. Codex writes status as a sentence such as “I'm idle, so I'm running ready_for_next.sh…” The last such sentence in the pane tail is the live status.
-
-**Change:** for the role that holds the card, read the session tail (same last 20 lines as the thermometer, after the working filter). The status is the last sentence that includes the string `I'm`. Show that sentence on the card. Empty if none. Poll with `/api/state`.
-
-**Where:** `pack_web.bb` `/api/state` tasks; `pack/dashboard.html` `cardEl`.
-
-9. Sometimes QA needs clarification from the operator. That must go through Attention, not the pane.
-
-Constitution today says stop and ask for clarification in the session. The operator cannot see that when windows are invisible. Attention is the human gate.
-
-**Change:** QA (and any role that needs a human answer) posts a clarification request instead of asking in the pane. Attention shows a row labeled **Request clarification**, the question text, and a **text box**. Submit sends the operator’s answer into that agent (same inject path as chat: durable id, wake line, they continue). Do not use Approve/Reject for this; it is not a spec handoff.
-
-**Where:** Attention strip in `pack/dashboard.html`; `pack_web.bb` `/api/state` and a post for the reply; a helper QA can call (like `pack_dashboard_request.sh`); Tool Startup / QA prompt: do not ask in the pane.
+16. Agents must use the constitution tools. They must not invent stand-ins. Cleaner added `scripts/code_quality.clj` and `bb crap` / `bb coverage` / `bb dry` / `bb mutation-count` “without pulling in a separate build system.” Coverage counts `(defn` vs `(is`. CRAP hardcodes coverage `0.8`. Mutation-count only tallies operators. The constitution already names `crap4clj` (Cloverage, then CRAP), `dry4clj`, and `clj-mutate`. Architect and QA cloned `crap4clj` into `.swarmforge/tools` and left `bb crap` on the proxy. Hardender never ran `clj-mutate` or Cloverage; it treated `bb mutation-count` as the language mutation tool and only ran `gherkin-mutator` on features. Install and invoke the real tools. Do not accept a project `bb` task as those tools if it is a homegrown proxy.

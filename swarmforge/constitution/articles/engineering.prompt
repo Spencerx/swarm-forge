@@ -43,6 +43,7 @@
 - Run the relevant local verification command before handoff whenever the project has one.
 
 ## Guardrails
+- Do not invent project-local CRAP, DRY, mutation, or coverage proxies. Install and run the constitution tools (`crap4clj` with Cloverage, `dry4clj`, `clj-mutate`, or the language table). Do not treat a homegrown `bb crap` / `bb coverage` / `bb mutation-count` task as those tools.
 - Do not edit mutation testing or Gherkin acceptance mutation manifests by hand; allow approved mutation tools to update those manifests as part of their normal runs.
 - Do not commit unrelated local changes or generated artifacts unless required for the task.
 - Before relying on an unfamiliar command, inspect local help or project documentation.

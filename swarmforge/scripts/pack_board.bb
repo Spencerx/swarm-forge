@@ -48,17 +48,15 @@
           (str (fs/path path))
           (str (fs/absolutize path)))))))
 
+(defn roles-at? [root]
+  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+
 (defn project-root []
-  (if-let [root (git-root)]
-    (if (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))
-      root
-      (if-let [common (git-common-dir)]
-        (let [candidate (str (fs/parent common))]
-          (if (fs/exists? (fs/path candidate ".swarmforge" "roles.tsv"))
-            candidate
-            (exit! 1 "Cannot find SwarmForge project root")))
-        (exit! 1 "Cannot find SwarmForge project root")))
-    (exit! 1 "Cannot find SwarmForge project root")))
+  (or (let [parent (some-> (git-common-dir) fs/parent str)]
+        (when (roles-at? parent) parent))
+      (when (roles-at? (git-root)) (git-root))
+      (when (roles-at? (fs/cwd)) (str (fs/cwd)))
+      (exit! 1 "Cannot find SwarmForge project root")))
 
 (defn parse-args [args]
   (loop [args args opts {} positionals []]

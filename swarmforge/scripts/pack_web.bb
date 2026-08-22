@@ -26,7 +26,10 @@
        "  pack_web.sh --test-heat-codex <root>\n"
        "  pack_web.sh --test-heat-reorder <root>\n"
        "  pack_web.sh --test-heat-head <root>\n"
+       "  pack_web.sh --test-heat-mail <root>\n"
+       "  pack_web.sh --test-heat-collapse <root>\n"
        "  pack_web.sh --test-status-pane <root> <text>\n"
+       "  pack_web.sh --test-status-persist <root> <first> <second>\n"
        "  pack_web.sh --test-answer-clarification <root> <id> <text>\n"
        "  pack_web.sh --test-task <root> <name>\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
@@ -41,6 +44,7 @@
 (def teardown-delay-ms 250)
 (def pane-capture-lines 2000)
 (def pane-heat (atom {}))
+(def pane-status (atom {}))
 
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name)
 
@@ -157,17 +161,37 @@
        (remove str/blank?)
        vec))
 
-(defn im-status [text backend]
-  (let [tail (last-n-lines (pane-sample text backend) 20)]
-    (or (last (filter #(str/includes? % "I'm") (pane-sentences (str/join "\n" tail))))
-        "")))
+(defn fold-apostrophe [s]
+  (str/replace (or s "") "\u2019" "'"))
+
+(defn i-status? [sentence]
+  (boolean (re-find #"\bI(?:'(?:ll|m|ve))?\b" (fold-apostrophe sentence))))
+
+(defn other-status? [sentence]
+  (let [n (str/lower-case (fold-apostrophe sentence))]
+    (boolean (or (re-find #"\blet me\b" n)
+                 (re-find #"\brun\b" n)
+                 (re-find #"hand off" n)
+                 (re-find #"handing off" n)
+                 (re-find #"handoff" n)
+                 (re-find #"continue" n)))))
+
+(defn status-sentence? [sentence]
+  (or (i-status? sentence) (other-status? sentence)))
+
+(defn im-status [role text backend]
+  (let [tail (last-n-lines (pane-sample text backend) 20)
+        found (last (filter status-sentence? (pane-sentences (str/join "\n" tail))))]
+    (if (seq found)
+      (do (swap! pane-status assoc role found) found)
+      (get @pane-status role ""))))
 
 (defn task-with-status [root task]
   (let [role (:lane task)
         row (role-row root role)
         text (when row (live-pane-text root role))
         backend (when row (backend-name row))]
-    (assoc task :status (im-status text backend))))
+    (assoc task :status (im-status role text backend))))
 
 (defn tasks [root]
   (mapv #(task-with-status root (task-entry %))
@@ -283,26 +307,19 @@
 (defn backend-name [row]
   (str/lower-case (or (nth row 5 nil) "")))
 
-(defn codex-input-line? [line]
-  (str/starts-with? line "› "))
-
-(defn strip-codex-input [text]
-  (let [lines (vec (str/split-lines (or text "")))
-        input-index (last (keep-indexed (fn [idx line]
-                                          (when (codex-input-line? line) idx))
-                                        lines))
-        kept (if input-index (subvec lines 0 input-index) lines)]
-    (str/join "\n" kept)))
+(defn live-prompt-line? [line]
+  (boolean (re-matches #"›\s*" (str/trim line))))
 
 (defn codex-working-line? [line]
   (let [t (str/trim line)]
     (or (str/blank? t)
+        (live-prompt-line? t)
         (re-find #"(?i)esc to interrupt" t)
         (re-find #"(?i)^working\b" t)
         (re-find #"(?i)•\s*working\b" t)
         (re-find #"(?i)worked for\s" t)
-        (re-find #"ctrl \+ t to view transcript" t)
-        (re-find #"gpt-\S+" t)
+        (re-find #"(?i)tab to queue" t)
+        (re-find #"(?i)context left" t)
         (re-find #"·\s*\d+s\b" t))))
 
 (defn strip-trailing-chrome [text pred]
@@ -318,7 +335,7 @@
   (let [backend (str/lower-case (or backend ""))]
     (cond
       (#{"codex" "chatgpt"} backend)
-      (strip-trailing-chrome (strip-codex-input text) codex-working-line?)
+      (strip-trailing-chrome text codex-working-line?)
 
       :else
       (let [lines (vec (str/split-lines (str/trimr (or text ""))))]
@@ -360,16 +377,30 @@
    :updated_at (or updated "")
    :activity activity})
 
+(defn in-process-task-names [files]
+  (->> files
+       (map #(get-in (parse-message %) [:headers "task"]))
+       (remove str/blank?)
+       distinct
+       vec))
+
+(defn work-task-name [files cards]
+  (let [from-files (in-process-task-names files)
+        from-cards (mapv :name cards)
+        names (if (seq from-files) from-files from-cards)]
+    (str/join ", " names)))
+
 (defn work-row-for-role [root socket row all-tasks]
   (let [role (first row)
         files (in-process-for-row row)
         path (first files)
         from-file (when path (work-entry role path))
-        card (first (cards-in-lane all-tasks role))
+        cards (cards-in-lane all-tasks role)
+        card (first cards)
         busy? (boolean (or path card))
         alive? (session-alive? socket (session-name row))
         text (live-pane-text root role)
-        task-name (or (:task from-file) (:name card) "")]
+        task-name (work-task-name files cards)]
     (queue-row role task-name busy? alive?
                (role-heat role (or alive? (some? *pane-text*)) text (backend-name row))
                (or (:updated_at from-file) (:updated_at card) ""))))
@@ -443,6 +474,12 @@
   (if (str/includes? (or text "") "\n")
     (str "[" id "]\n" text)
     (str "[" id "] " text)))
+
+(defn clar-wake [id role question answer]
+  (str "[" id "]\n"
+       "Clarification requested from: " role "\n"
+       "Question:\n" (str/trimr (or question "")) "\n"
+       "Answer:\n" (str/trimr (or answer ""))))
 
 (defn write-chat-request! [root text]
   (let [id (chat-id)
@@ -530,7 +567,7 @@
                                                    :status "done"
                                                    :response text)))
       (fs/delete-if-exists src)
-      (inject-role! root role (chat-wake id text)))))
+      (inject-role! root role (clar-wake id role (:body entry) text)))))
 
 (defn clarification-route [uri]
   (let [path (first (str/split (or uri "") #"\?"))]
@@ -982,10 +1019,43 @@
         after (str (str/join "\n" (concat ["v" "w" "x" "y" "z"] tail)) "\n")]
     (print-heat-pair! root before after)))
 
+(defn test-heat-mail! [root]
+  (print-heat-pair! root
+                    (str "stable\n"
+                         "› You have new handoff mail. If idle, run ready_for_next.sh.\n"
+                         "work line A\n"
+                         "• Working (1s • esc to interrupt)\n"
+                         "›\n")
+                    (str "stable\n"
+                         "› You have new handoff mail. If idle, run ready_for_next.sh.\n"
+                         "work line B\n"
+                         "• Working (2s • esc to interrupt)\n"
+                         "›\n")))
+
+(defn test-heat-collapse! [root]
+  (print-heat-pair! root
+                    (str "… +28 lines (ctrl + t to view transcript)\n"
+                         "• Working (1s • esc to interrupt)\n")
+                    (str "… +29 lines (ctrl + t to view transcript)\n"
+                         "• Working (2s • esc to interrupt)\n")))
+
 (defn test-status-pane! [root text]
   (require-root! root)
   (binding [*pane-text* (or text "")]
     (println (:body (handle-request root {:method "GET" :uri "/api/state"})))))
+
+(defn test-status-persist! [root first-text second-text]
+  (require-root! root)
+  (reset! pane-status {})
+  (binding [*pane-text* (or first-text "")]
+    (let [first-status (:status (first (:tasks (json/parse-string
+                                                (:body (handle-request root {:method "GET" :uri "/api/state"}))
+                                                true))))]
+      (binding [*pane-text* (or second-text "")]
+        (let [second-status (:status (first (:tasks (json/parse-string
+                                                     (:body (handle-request root {:method "GET" :uri "/api/state"}))
+                                                     true))))]
+          (println (json/generate-string {:first first-status :second second-status})))))))
 
 (defn test-answer-clarification! [root id text]
   (when (str/blank? id)
@@ -1068,7 +1138,10 @@
     "--test-heat-codex" (test-heat-codex! (second args))
     "--test-heat-reorder" (test-heat-reorder! (second args))
     "--test-heat-head" (test-heat-head! (second args))
+    "--test-heat-mail" (test-heat-mail! (second args))
+    "--test-heat-collapse" (test-heat-collapse! (second args))
     "--test-status-pane" (test-status-pane! (second args) (nth args 2 nil))
+    "--test-status-persist" (test-status-persist! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-answer-clarification" (test-answer-clarification! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-task" (test-task! (second args) (nth args 2 nil))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))

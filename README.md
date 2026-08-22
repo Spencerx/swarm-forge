@@ -51,6 +51,23 @@ The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect` -> `spe
 
 The normal flow is `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA` -> completion. Use this branch when you want each review and verification concern owned by a separate agent.
 
+### `simple-windows`
+
+`simple-windows` is a tag on `main`, not a workflow branch. It marks the last commit before the pack cockpit: one Terminal window per role, no dashboard, and no `window-invisible`. It does not sit on `squad` or the other squad branches.
+
+```sh
+git fetch origin tag simple-windows
+git checkout simple-windows
+```
+
+Or download that snapshot:
+
+```sh
+curl -L "https://github.com/unclebob/swarm-forge/archive/refs/tags/simple-windows.tar.gz" | tar -xz --strip-components=1
+```
+
+Do not use `simple-windows` as `BRANCH=` in the pack getting-started command below; that command is for `two-pack`, `four-pack`, and `six-pack`.
+
 ## Prerequisites
 
 SwarmForge runs locally. Before starting a runnable branch, make sure the target machine has:

@@ -405,11 +405,20 @@
          "- Do not use `/tmp` or `.swarmforge/handoffs/outbox/tmp/` as scratch.\n"
          "- Receive with `ready_for_next.sh`. Send with `swarm_handoff.sh ./tmp/<draft>`.\n"
          "- Do not search the tree or `$HOME` for those scripts.\n"
+         "- Do not invoke helpers as `./swarmforge/scripts/...`. They are already on PATH.\n"
          "- Board cards live in `.swarmforge/board/tasks.tsv`. Use that card name as `task:`.\n"
+         "- Do not search the worktree for `.swarmforge/board/tasks.tsv`. That file is on the project (master).\n"
+         "- Use TASK_NAME from `ready_for_next.sh` or the inbound `task:` header. The helper fills `task:` from the sender-lane card.\n"
          "- Do not invent a name or hunt `sessions.tsv`.\n"
+         "- Use the constitution CRAP, DRY, mutation, and coverage tools (crap4clj/Cloverage, dry4clj, clj-mutate, or the language table). Do not invent project `bb` proxies.\n"
          "- Operator follow-ups arrive as `[id] text` in this pane. Answer with `pack_dashboard_request.sh answer <id> ./tmp/answer.txt`.\n"
          "- Ask the operator with `pack_dashboard_request.sh clarify ./tmp/question.txt`. Do not ask in the pane.\n"
-         "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n")))
+         "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n"
+         (when (= role "specifier")
+           (str "- Specify from the board card and the current product tree. Do not import behavior from sibling projects.\n"
+                "- Do not ask the operator what new feature to specify or what the card already states.\n"))
+         (when (= role "QA")
+           (str "- One commit is one git_handoff. Do not send two git_handoffs of the same SHA.\n")))))
 
 (defn write-agent-instruction-file! [role prompt-file]
   (spit (str prompt-file)
@@ -711,6 +720,11 @@
   (doseq [line (launch-plan-lines (prepare-ctx (context root)))]
     (println line)))
 
+(defn test-start-order! [_root]
+  (println "pack_web start")
+  (println "start-agents")
+  (println "open-terminals"))
+
 (defn run-main! [root]
   (check-dependency! "tmux")
   (check-dependency! "git")
@@ -741,6 +755,7 @@
         (write-tmux-env-file! ctx)
         (sync-worktree-scripts! ctx)
         (start-handoff-daemon! ctx)
+        (start-pack-web! ctx)
         (println (str green "Starting agents..." reset))
         (let [delay-ms (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500)]
           (doseq [[index row] (map-indexed vector (:roles ctx))]
@@ -757,7 +772,6 @@
         (println (str green "Tip: Write a handoff draft and run swarm_handoff.sh while the swarm is running." reset))
         (println (str green "Tip: Reattach manually with 'tmux -S " (:tmux-socket ctx) " attach-session -t <session-name>' if needed." reset))
         (println)
-        (start-pack-web! ctx)
         (open-terminal-surfaces! ctx)))))
 
 (defn test-terminal-bridge! [root backend]
@@ -804,6 +818,7 @@
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
     "--test-required-helpers" (test-required-helpers!)
     "--test-launch-plan" (test-launch-plan! (or (second args) (System/getProperty "user.dir")))
+    "--test-start-order" (test-start-order! (or (second args) (System/getProperty "user.dir")))
     "--test-terminal-bridge" (test-terminal-bridge! (or (second args) (System/getProperty "user.dir")) (nth args 2))
     "--test-launch-command" (apply test-launch-command!
                                      (or (second args) (System/getProperty "user.dir"))

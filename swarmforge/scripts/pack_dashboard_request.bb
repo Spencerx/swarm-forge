@@ -42,16 +42,11 @@
   (fs/exists? (fs/path root ".swarmforge" "roles.tsv")))
 
 (defn project-root []
-  (let [here (str (fs/absolutize "."))]
-    (cond
-      (has-roles? here) here
-      (and (git-root) (has-roles? (git-root))) (git-root)
-      (git-common-dir)
-      (let [candidate (str (fs/parent (git-common-dir)))]
-        (if (has-roles? candidate)
-          candidate
-          (exit! 1 "Cannot find SwarmForge project root")))
-      :else (exit! 1 "Cannot find SwarmForge project root"))))
+  (or (let [parent (some-> (git-common-dir) fs/parent str)]
+        (when (has-roles? parent) parent))
+      (when (has-roles? (git-root)) (git-root))
+      (when (has-roles? (str (fs/absolutize "."))) (str (fs/absolutize ".")))
+      (exit! 1 "Cannot find SwarmForge project root")))
 
 (defn same-path? [a b]
   (try
