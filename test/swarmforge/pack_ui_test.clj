@@ -82,6 +82,12 @@
   [root env & args]
   (apply run {:dir root :env env} (script "pack_web.sh") args))
 
+(defn set-backend!
+  [root backend]
+  (let [file (fs/path root ".swarmforge/roles.tsv")]
+    (spit (str file)
+          (str/replace (slurp (str file)) #"\tcodex\t" (str "\t" backend "\t")))))
+
 (defn read-argv [path]
   (when (fs/exists? path)
     (->> (str/split-lines (slurp (str path)))
@@ -969,6 +975,23 @@
   (let [html (dashboard-html (tmp-dir))]
     (is (str/includes? html "task.status"))))
 
+(deftest pack-dashboard-new-task-alerts-on-duplicate
+  ;; Given dashboard HTML
+  ;; Then duplicate create keeps the dialog and alerts
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "submitNewTask"))
+    (is (str/includes? html "if (!res.ok)"))
+    (is (str/includes? html "alert("))
+    (is (str/includes? html "nt-name"))))
+
+(deftest pack-dashboard-rejected-card-has-delete
+  ;; Given dashboard HTML
+  ;; Then a REJECTED card is red and can be deleted
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "REJECTED"))
+    (is (str/includes? html "card-rejected"))
+    (is (str/includes? html "/api/tasks/delete"))))
+
 (deftest pack-dashboard-attention-has-clarification-row
   ;; Given dashboard HTML
   ;; Then Attention can show Request clarification with a text box
@@ -1028,6 +1051,44 @@
       (is (zero? (:exit result)))
       (is (str/includes? (str (:status card)) "I'll continue with the cave map.")))))
 
+(deftest pack-web-card-status-ignores-handoff-mail-banner
+  ;; Given an I'll sentence and a later If idle, run ready_for_next.sh banner
+  ;; When --test-status-pane
+  ;; Then status is the I'll sentence, not the mail line
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "I'll commit the spec and queue the coder handoff.\n"
+                                  "You have new handoff mail. If idle, run ready_for_next.sh.\n"
+                                  "esc to interrupt · 1s\n"))
+        state (json/parse-string (:out result) true)
+        card (first (:tasks state))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll commit the spec"))
+    (is (not (str/includes? (str (:status card)) "ready_for_next")))))
+
+(deftest pack-web-grok-card-status-uses-work-not-chrome
+  ;; Given a Grok pane with an I'll sentence under mail and chrome
+  ;; When --test-status-pane
+  ;; Then status is the I'll sentence
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (set-backend! root "grok")
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "I'll commit the spec and queue the coder handoff.\n"
+                                  "You have new handoff mail. If idle, run ready_for_next.sh.\n"
+                                  "always-approve  shift+tab\n"
+                                  "Waiting for response...\n"
+                                  "enter:send  Esc:cancel\n"))
+        state (json/parse-string (:out result) true)
+        card (first (:tasks state))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll commit the spec"))
+    (is (not (str/includes? (str (:status card)) "ready_for_next")))
+    (is (not (str/includes? (str (:status card)) "Waiting for response")))))
+
 (deftest pack-web-waiting-cards-say-waiting-in-queue
   ;; Given two specifier cards and a pane I'm sentence
   ;; When --test-status-pane
@@ -1063,6 +1124,85 @@
     (is (str/includes? (str (:status (get by-name "Holy Hand Grenade")))
                        "I'm merging the grenade"))
     (is (= "waiting in queue" (:status (get by-name "HTW"))))))
+
+(deftest pack-web-pending-approval-card-says-waiting-for-approval
+  ;; Given HTW in specifier and a pending specifier→coder git_handoff for HTW
+  ;; When --test-state
+  ;; Then HTW status is Waiting for approval
+  (let [root (tmp-dir)
+        _ (setup-pack! root six-pack-roles)
+        _ (create-task root "HTW" "specifier")
+        _ (create-task root "Command Syntax" "specifier")]
+    (write-file
+     (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
+     "from: specifier\nto: coder\npriority: 50\ntype: git_handoff\ntask: HTW\n\npayload\n")
+    (let [state (web-state root)
+          by-name (into {} (map (juxt :name identity) (:tasks state)))]
+      (is (= "Waiting for approval" (:status (get by-name "HTW"))))
+      (is (= "waiting in queue" (:status (get by-name "Command Syntax")))))))
+
+(deftest pack-web-rejected-card-says-rejected
+  ;; Given HTW is rejected
+  ;; When --test-state
+  ;; Then HTW status is REJECTED
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")]
+    (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
+    (let [card (first (:tasks (web-state root)))]
+      (is (= "REJECTED" (:status card))))))
+
+(deftest pack-web-delete-removes-a-rejected-card
+  ;; Given a rejected HTW card
+  ;; When POST /api/tasks/delete
+  ;; Then the card is gone from the board
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
+        result (pack-web root false "--test-delete-task" (str root) "HTW")]
+    (is (zero? (:exit result)))
+    (is (nil? (task-lane root "HTW")))
+    (is (not (fs/exists? (fs/path root ".swarmforge/board/HTW.txt"))))))
+
+(deftest pack-web-post-task-duplicate-keeps-the-server
+  ;; Given a card named HTW
+  ;; When POST /api/tasks uses HTW again
+  ;; Then it reports Duplicate and does not create a second card
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (pack-web root true "--test-post-task" (str root) "HTW" "first")
+        duplicate (pack-web root false "--test-post-task" (str root) "HTW" "second")
+        listed (:out (list-tasks root))
+        htw-rows (filter #(str/starts-with? % "HTW\t") (str/split-lines listed))]
+    (is (not (zero? (:exit duplicate))))
+    (is (str/includes? (str (:err duplicate) (:out duplicate)) "Duplicate"))
+    (is (= 1 (count htw-rows)))))
+
+(deftest pack-web-unknown-approval-keeps-the-server
+  ;; Given a pack with no pending approval
+  ;; When POST /api/approvals/missing/reject
+  ;; Then it reports Unknown approval and the next request still works
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        result (pack-web root false "--test-reject" (str root) "no-such-id")]
+    (is (not (zero? (:exit result))))
+    (is (str/includes? (:out result) "error"))
+    (is (str/includes? (str (:err result) (:out result)) "Unknown approval"))
+    (is (zero? (:exit (pack-web root false "--test-state" (str root)))))))
+
+(deftest pack-web-unknown-clarification-keeps-the-server
+  ;; Given a pack with no pending clarification
+  ;; When POST /api/clarifications/missing/answer
+  ;; Then it reports Unknown clarification and the next request still works
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        result (pack-web root false "--test-answer-clarification"
+                         (str root) "no-such-id" "nope")]
+    (is (not (zero? (:exit result))))
+    (is (str/includes? (:out result) "error"))
+    (is (str/includes? (str (:err result) (:out result)) "Unknown clarification"))
+    (is (zero? (:exit (pack-web root false "--test-state" (str root)))))))
 
 (deftest pack-web-clarification-posts-to-attention-and-answers-into-the-role
   ;; Given QA posts a clarification question
@@ -1220,6 +1360,18 @@
         body (json/parse-string (:out result) true)]
     (is (zero? (:exit result)))
     (is (< (:before body) (:after body)))))
+
+(deftest pack-web-grok-thermometer-ignores-chrome-flicker
+  ;; Given a Grok pane whose only change is chrome at the bottom
+  ;; When --test-heat-grok
+  ;; Then activity stays at the baseline
+  (let [root (tmp-dir)
+        _ (setup-pack! root ["specifier"])
+        _ (set-backend! root "grok")
+        result (pack-web root false "--test-heat-grok" (str root))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (= (:before body) (:after body)))))
 
 (deftest pack-web-thermometer-heats-on-collapsed-transcript-counts
   ;; Given Codex collapsed output whose +N line changes

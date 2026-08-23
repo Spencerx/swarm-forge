@@ -47,6 +47,8 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .card .title{font-weight:700;font-size:12px}
 .card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block}
 .card .status{color:var(--muted);font-size:10px;white-space:normal;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
+.card-rejected .status{color:var(--red);font-weight:700;-webkit-line-clamp:1}
+.card-del{margin-left:auto;padding:1px 6px;font-size:10px;line-height:1.2}
 .card .foot{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px;margin-top:auto}
 .timer{font-variant-numeric:tabular-nums}
 .rail{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden;font-size:12px;scrollbar-gutter:stable}
@@ -189,6 +191,7 @@ function displayName(role) {
 function cardEl(task) {
   const card = document.createElement("article");
   card.className = "card";
+  if (task.status === "REJECTED") card.classList.add("card-rejected");
   card.setAttribute("data-task-name", task.name || "");
   const title = document.createElement("div");
   title.className = "title";
@@ -201,6 +204,18 @@ function cardEl(task) {
   const lane = document.createElement("span");
   lane.textContent = task.lane;
   foot.appendChild(lane);
+  if (task.status === "REJECTED") {
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn btn-sm card-del";
+    del.textContent = "×";
+    del.title = "Remove rejected card";
+    del.onclick = (event) => {
+      event.stopPropagation();
+      deleteTask(task.name);
+    };
+    foot.appendChild(del);
+  }
   card.append(title, foot);
   if (task.status) {
     const status = document.createElement("div");
@@ -554,14 +569,34 @@ async function submitNewTask() {
   const name = $("nt-name").value.trim();
   const text = $("nt-text").value;
   if (!name) return;
-  await fetch("/api/tasks", {
+  const res = await fetch("/api/tasks", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({name, text})
   });
+  if (!res.ok) {
+    let msg = "Could not create task";
+    try {
+      const body = await res.json();
+      msg = body.error || msg;
+    } catch (_) {}
+    alert(msg);
+    $("nt-name").focus();
+    return;
+  }
   $("nt-name").value = "";
   $("nt-text").value = "";
   closeNewTask();
+  loadState();
+}
+
+async function deleteTask(name) {
+  if (!name) return;
+  await fetch("/api/tasks/delete", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name})
+  });
   loadState();
 }
 

@@ -27,11 +27,13 @@
        "  pack_web.sh --test-heat-reorder <root>\n"
        "  pack_web.sh --test-heat-head <root>\n"
        "  pack_web.sh --test-heat-mail <root>\n"
+       "  pack_web.sh --test-heat-grok <root>\n"
        "  pack_web.sh --test-heat-collapse <root>\n"
        "  pack_web.sh --test-status-pane <root> <text>\n"
        "  pack_web.sh --test-status-persist <root> <first> <second>\n"
        "  pack_web.sh --test-answer-clarification <root> <id> <text>\n"
        "  pack_web.sh --test-task <root> <name>\n"
+       "  pack_web.sh --test-delete-task <root> <name>\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
 (def example-task-name "htw-console-app")
@@ -47,7 +49,7 @@
 (def pane-status (atom {}))
 
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name
-         in-process-for-row in-process-task-names)
+         in-process-for-row in-process-task-names approvals)
 
 (defn usage []
   (binding [*out* *err*]
@@ -130,11 +132,16 @@
   (when-let [row (master-row root)]
     (inject-role! root (first row) text)))
 
+(defn pack-board-result [root & args]
+  (let [script (str (fs/path script-dir "pack_board.sh"))]
+    (apply sh (concat [script] args ["--root" (str root)]))))
+
 (defn pack-board [root & args]
-  (let [script (str (fs/path script-dir "pack_board.sh"))
-        result (apply sh (concat [script] args ["--root" (str root)]))]
+  (let [result (apply pack-board-result root args)]
     (when-not (zero? (:exit result))
-      (exit! 1 (str/trim (str (:err result) "\n" (:out result)))))
+      (let [msg (str/trim (str (:err result) "\n" (:out result)))]
+        (throw (ex-info msg {:exit (:exit result)
+                             :http-status (if (str/includes? msg "Duplicate") 409 400)}))))
     (:out result)))
 
 (defn lines [text]
@@ -177,8 +184,15 @@
                  (re-find #"handoff" n)
                  (re-find #"continue" n)))))
 
+(defn mail-banner? [sentence]
+  (let [n (str/lower-case (fold-apostrophe sentence))]
+    (boolean (or (re-find #"you have new handoff mail" n)
+                 (re-find #"if idle, run ready_for_next" n)
+                 (re-find #"rejected:" n)))))
+
 (defn status-sentence? [sentence]
-  (or (i-status? sentence) (other-status? sentence)))
+  (and (not (mail-banner? sentence))
+       (or (i-status? sentence) (other-status? sentence))))
 
 (defn im-status [role text backend]
   (let [tail (last-n-lines (pane-sample text backend) 20)
@@ -205,12 +219,24 @@
         #{(:name card)}
         #{}))))
 
+(defn rejected-task? [root name]
+  (fs/exists? (fs/path root ".swarmforge" "notify" (str "reject-" name))))
+
+(defn pending-approval-names [root]
+  (->> (approvals root)
+       (map :task)
+       (remove str/blank?)
+       set))
+
 (defn task-with-status [root task]
-  (let [role (:lane task)]
+  (let [role (:lane task)
+        name (:name task)]
     (assoc task :status
            (cond
              (= "done" role) ""
-             (contains? (active-card-names root role) (:name task))
+             (rejected-task? root name) "REJECTED"
+             (contains? (pending-approval-names root) name) "Waiting for approval"
+             (contains? (active-card-names root role) name)
              (pane-status-for root role)
              :else "waiting in queue"))))
 
@@ -351,17 +377,37 @@
                 :else (inc i)))]
     (str/join "\n" (subvec lines 0 (max cut 0)))))
 
-(defn pane-sample [text backend]
-  (let [backend (str/lower-case (or backend ""))]
-    (cond
-      (#{"codex" "chatgpt"} backend)
-      (strip-trailing-chrome text codex-working-line?)
+(defn grok-chrome-line? [line]
+  (let [t (str/trim line)]
+    (or (str/blank? t)
+        (live-prompt-line? t)
+        (mail-banner? t)
+        (re-find #"(?i)always-approve" t)
+        (re-find #"(?i)shift\+tab" t)
+        (re-find #"(?i)waiting for response" t)
+        (re-find #"(?i)enter:send" t)
+        (re-find #"Esc:cancel" t))))
 
-      :else
-      (let [lines (vec (str/split-lines (str/trimr (or text ""))))]
-        (if (<= (count lines) 1)
-          ""
-          (str/join "\n" (pop lines)))))))
+(defn drop-mail-lines [text]
+  (->> (str/split-lines (or text ""))
+       (remove mail-banner?)
+       (str/join "\n")))
+
+(defn pane-sample [text backend]
+  (let [backend (str/lower-case (or backend ""))
+        sampled (cond
+                  (#{"codex" "chatgpt"} backend)
+                  (strip-trailing-chrome text codex-working-line?)
+
+                  (#{"grok"} backend)
+                  (strip-trailing-chrome text grok-chrome-line?)
+
+                  :else
+                  (let [lines (vec (str/split-lines (str/trimr (or text ""))))]
+                    (if (<= (count lines) 1)
+                      ""
+                      (str/join "\n" (pop lines)))))]
+    (drop-mail-lines sampled)))
 
 (defn bag-diff [a b]
   (let [ks (set (concat (keys a) (keys b)))]
@@ -559,24 +605,48 @@
                body
                (when-not (str/ends-with? body "\n") "\n")))))
 
+(defn json-ok []
+  {:status 200
+   :headers {"Content-Type" "application/json"}
+   :body (json/generate-string {:ok true})})
+
+(defn http-error [status message]
+  {:status status
+   :headers {"Content-Type" "application/json"}
+   :body (json/generate-string {:error message})})
+
+(defn delete-task! [root name]
+  (when (str/blank? name)
+    (throw (ex-info "Missing task name" {:http-status 400})))
+  (when-not (rejected-task? root name)
+    (throw (ex-info (str "Not rejected: " name) {:http-status 400})))
+  (pack-board root "delete" "--name" name)
+  (fs/delete-if-exists (fs/path root ".swarmforge" "notify" (str "reject-" name))))
+
+(defn post-delete-task [root body]
+  (let [{:keys [name]} (json/parse-string (or body "{}") true)]
+    (try
+      (delete-task! root name)
+      (json-ok)
+      (catch Exception e
+        (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
+
 (defn create-task! [root name text]
   (when (str/blank? name)
-    (exit! 1 "Missing task name"))
+    (throw (ex-info "Missing task name" {:http-status 400})))
   (pack-board root "create"
               "--name" name
               "--lane" (master-role root)
               "--text" (or text ""))
   (queue-new-task-note! root name (or text "")))
 
-(defn json-ok []
-  {:status 200
-   :headers {"Content-Type" "application/json"}
-   :body (json/generate-string {:ok true})})
-
 (defn post-tasks [root body]
   (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
-    (create-task! root name text)
-    (json-ok)))
+    (try
+      (create-task! root name text)
+      (json-ok)
+      (catch Exception e
+        (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
 
 (defn post-chat [root body]
   (let [{:keys [text]} (json/parse-string (or body "{}") true)
@@ -603,7 +673,7 @@
 (defn answer-clarification! [root id text]
   (let [src (clar-pending-file root id)]
     (when-not (fs/regular-file? src)
-      (exit! 1 (str "Unknown clarification: " id)))
+      (throw (ex-info (str "Unknown clarification: " id) {:http-status 404})))
     (let [entry (parse-clarification src)
           dest (fs/path (clar-done-dir root) (str id ".request"))
           role (:role entry)]
@@ -632,7 +702,7 @@
 (defn require-pending! [root id]
   (let [path (pending-file root id)]
     (when-not (fs/regular-file? path)
-      (exit! 1 (str "Unknown approval: " id)))
+      (throw (ex-info (str "Unknown approval: " id) {:http-status 404})))
     path))
 
 (defn with-approved [content]
@@ -974,6 +1044,7 @@
 (defn handle-post [root uri body]
   (cond
     (= "/api/tasks" uri) (post-tasks root body)
+    (= "/api/tasks/delete" uri) (post-delete-task root body)
     (= "/api/chat" uri) (post-chat root body)
     (= "/api/teardown" uri) (teardown-response root body)
     (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri)
@@ -981,10 +1052,13 @@
     :else {:status 404 :body "Not found"}))
 
 (defn handle-request [root {:keys [method uri body]}]
-  (case method
-    "GET" (handle-get root uri)
-    "POST" (handle-post root uri body)
-    {:status 404 :body "Not found"}))
+  (try
+    (case method
+      "GET" (handle-get root uri)
+      "POST" (handle-post root uri body)
+      {:status 404 :body "Not found"})
+    (catch Exception e
+      (http-error (or (:http-status (ex-data e)) 500) (.getMessage e)))))
 
 (defn test-state! [root]
   (println (:body (handle-request (require-root! root) {:method "GET" :uri "/api/state"}))))
@@ -994,10 +1068,28 @@
   (flush))
 
 (defn test-post-task! [root name text]
-  (handle-request (require-root! root)
-                  {:method "POST"
-                   :uri "/api/tasks"
-                   :body (json/generate-string {:name name :text (or text "")})}))
+  (let [resp (handle-request (require-root! root)
+                             {:method "POST"
+                              :uri "/api/tasks"
+                              :body (json/generate-string {:name name :text (or text "")})})]
+    (print (:body resp))
+    (flush)
+    (when-not (= 200 (:status resp))
+      (binding [*out* *err*]
+        (println (:body resp)))
+      (System/exit 1))))
+
+(defn test-delete-task! [root name]
+  (let [resp (handle-request (require-root! root)
+                             {:method "POST"
+                              :uri "/api/tasks/delete"
+                              :body (json/generate-string {:name name})})]
+    (print (:body resp))
+    (flush)
+    (when-not (= 200 (:status resp))
+      (binding [*out* *err*]
+        (println (:body resp)))
+      (System/exit 1))))
 
 (defn test-post-chat! [root text]
   (handle-request (require-root! root)
@@ -1016,12 +1108,20 @@
   (binding [*tmux-stub* file]
     (inject-master! (require-root! root) text)))
 
+(defn test-http! [resp]
+  (print (:body resp))
+  (flush)
+  (when-not (= 200 (:status resp))
+    (binding [*out* *err*]
+      (println (:body resp)))
+    (System/exit 1)))
+
 (defn test-approval! [root id action]
   (when (str/blank? id)
     (exit! 1 "Missing approval id"))
-  (handle-request (require-root! root)
-                  {:method "POST"
-                   :uri (str "/api/approvals/" id "/" action)}))
+  (test-http! (handle-request (require-root! root)
+                              {:method "POST"
+                               :uri (str "/api/approvals/" id "/" action)})))
 
 (defn test-pane! [root role]
   (when (str/blank? role)
@@ -1077,6 +1177,19 @@
                          "• Working (2s • esc to interrupt)\n"
                          "›\n")))
 
+(defn test-heat-grok! [root]
+  (print-heat-pair! root
+                    (str "I'll write the cave stories.\n"
+                         "You have new handoff mail. If idle, run ready_for_next.sh.\n"
+                         "always-approve  shift+tab\n"
+                         "Waiting for response 1s\n"
+                         "enter:send  Esc:cancel\n")
+                    (str "I'll write the cave stories.\n"
+                         "You have new handoff mail. If idle, run ready_for_next.sh.\n"
+                         "always-approve  shift+tab\n"
+                         "Waiting for response 2s\n"
+                         "enter:send  Esc:cancel\n")))
+
 (defn test-heat-collapse! [root]
   (print-heat-pair! root
                     (str "… +28 lines (ctrl + t to view transcript)\n"
@@ -1105,10 +1218,10 @@
 (defn test-answer-clarification! [root id text]
   (when (str/blank? id)
     (exit! 1 "Missing clarification id"))
-  (handle-request (require-root! root)
-                  {:method "POST"
-                   :uri (str "/api/clarifications/" id "/answer")
-                   :body (json/generate-string {:text (or text "")})}))
+  (test-http! (handle-request (require-root! root)
+                              {:method "POST"
+                               :uri (str "/api/clarifications/" id "/answer")
+                               :body (json/generate-string {:text (or text "")})})))
 
 (defn test-task! [root name]
   (when (str/blank? name)
@@ -1184,11 +1297,13 @@
     "--test-heat-reorder" (test-heat-reorder! (second args))
     "--test-heat-head" (test-heat-head! (second args))
     "--test-heat-mail" (test-heat-mail! (second args))
+    "--test-heat-grok" (test-heat-grok! (second args))
     "--test-heat-collapse" (test-heat-collapse! (second args))
     "--test-status-pane" (test-status-pane! (second args) (nth args 2 nil))
     "--test-status-persist" (test-status-persist! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-answer-clarification" (test-answer-clarification! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-task" (test-task! (second args) (nth args 2 nil))
+    "--test-delete-task" (test-delete-task! (second args) (nth args 2 nil))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))

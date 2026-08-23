@@ -18,7 +18,9 @@
        "  pack_board.sh master-lane [--root <dir>]\n"
        "  pack_board.sh archive --role <role> --name <name> [--root <dir>]\n"
        "  pack_board.sh archive <role> <name>\n"
-       "  pack_board.sh archive-all [--root <dir>]"))
+       "  pack_board.sh archive-all [--root <dir>]\n"
+       "  pack_board.sh delete --name <name> [--root <dir>]\n"
+       "  pack_board.sh delete <name>"))
 
 (def flags {"--root" :root "--name" :name "--lane" :lane "--text" :text "--role" :role})
 
@@ -243,6 +245,19 @@
     (doseq [[name lane] (keep live-card (read-rows (tasks-file root)))]
       (archive-session! root lane name))))
 
+(defn delete! [opts]
+  (let [name (task-name opts)
+        root (resolve-root opts)
+        file (tasks-file root)]
+    (require-value! name "task name")
+    (let [rows (read-rows file)]
+      (when-not (find-task rows name)
+        (exit! 1 (str "Unknown task name: " name)))
+      (write-rows file (filterv #(not= (str/lower-case name)
+                                       (str/lower-case (or (row-name %) "")))
+                                rows))
+      (fs/delete-if-exists (task-body-file root name)))))
+
 (def commands
   {"create" create!
    "move" move!
@@ -251,7 +266,8 @@
    "lanes" lanes!
    "master-lane" master-lane!
    "archive" archive!
-   "archive-all" archive-all!})
+   "archive-all" archive-all!
+   "delete" delete!})
 
 (defn -main [& args]
   (let [opts (parse-args args)

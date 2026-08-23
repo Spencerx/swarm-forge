@@ -325,6 +325,21 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest grok-launch-command-uses-minimal-for-scrollback
+  ;; Given a grok pack role
+  ;; When SwarmForge builds the launch command
+  ;; Then grok runs --minimal so finalized chatter is in tmux scrollback
+  (let [root (tmp-dir)]
+    (try
+      (let [command (:out (run {:dir root}
+                               (script "swarmforge.bb")
+                               "--test-launch-command"
+                               (str root)
+                               "grok"))]
+        (is (str/includes? command " --minimal ")))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest grok-launch-command-uses-bypass-permissions-with-always-approve
   (let [root (tmp-dir)]
     (try
@@ -465,7 +480,9 @@
         (is (str/includes? prompt "clj-mutate"))
         (is (str/includes? prompt "Do not invent"))
         (is (str/includes? prompt "Do not ask the operator what new feature"))
-        (is (str/includes? prompt "Do not import behavior from sibling")))
+        (is (str/includes? prompt "Do not import behavior from sibling"))
+        (is (str/includes? prompt "Finish the assigned"))
+        (is (str/includes? prompt "one git_handoff")))
       (finally
         (fs/delete-tree root)))))
 
@@ -589,6 +606,28 @@
                         "--test-tmux-base-indexes"
                         sock)]
         (is (= "1 1" (str/trim (:out result)))))
+      (finally
+        (run {:dir root :ok? false} "tmux" "-S" sock "kill-server")
+        (fs/delete-tree root)))))
+
+(deftest role-session-keeps-tmux-scrollback
+  ;; Given a tmux socket
+  ;; When SwarmForge creates a role session
+  ;; Then history-limit keeps thousands of lines
+  (let [root (tmp-dir)
+        sock (str root "/test.sock")
+        conf (fs/path root "tmux.conf")]
+    (try
+      (write-file conf "set -g history-limit 50\n")
+      (run {:dir root} "tmux" "-S" sock "-f" (str conf) "new-session" "-d" "-s" "probe" "sleep" "120")
+      (let [result (run {:dir root}
+                        (script "swarmforge.bb")
+                        "--test-create-role-session"
+                        sock
+                        "swarmforge-specifier")
+            limit (Long/parseLong (str/trim (:out result)))]
+        (is (zero? (:exit result)))
+        (is (>= limit 2000)))
       (finally
         (run {:dir root :ok? false} "tmux" "-S" sock "kill-server")
         (fs/delete-tree root)))))

@@ -7,6 +7,7 @@
 
 (def session-prefix "swarmforge")
 (def agent-window "swarm")
+(def pane-history-limit 10000)
 (def red "\u001b[0;31m")
 (def green "\u001b[0;32m")
 (def yellow "\u001b[1;33m")
@@ -367,6 +368,7 @@
 
 (defn create-role-session! [ctx session title]
   (sh "tmux" "-S" (:tmux-socket ctx) "new-session" "-d" "-s" session "-n" agent-window)
+  (sh "tmux" "-S" (:tmux-socket ctx) "set-option" "-t" session "history-limit" (str pane-history-limit))
   (sh "tmux" "-S" (:tmux-socket ctx) "rename-window" "-t" (str session ":" agent-window) title)
   (sh "tmux" "-S" (:tmux-socket ctx) "set-window-option" "-t" (str session ":" title) "allow-rename" "off"))
 
@@ -416,7 +418,8 @@
          "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n"
          (when (= role "specifier")
            (str "- Specify from the board card and the current product tree. Do not import behavior from sibling projects.\n"
-                "- Do not ask the operator what new feature to specify or what the card already states.\n"))
+                "- Do not ask the operator what new feature to specify or what the card already states.\n"
+                "- Finish the assigned TASK_NAME and payload (the whole card), then one git_handoff. Do not hand off after the first feature in a folder.\n"))
          (when (= role "QA")
            (str "- One commit is one git_handoff. Do not send two git_handoffs of the same SHA.\n")))))
 
@@ -464,7 +467,7 @@
                   "claude" (str "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
                   "codex" (str "codex -C " (sq (str role-worktree)) " " (yolo-flag agent row) (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
                   "copilot" (str "copilot -C " (sq (str role-worktree)) " --name " (sq (str "SwarmForge " display)) " " (yolo-flag agent row) (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
-                  "grok" (str "grok --cwd " (sq (str role-worktree)) " " (grok-permission-prefix row) (extra-args-prefix row) "--rules \"$(cat " (sq (str prompt-file)) ")\" --verbatim \"$(cat " (sq (str prompt-file)) ")\"")))
+                  "grok" (str "grok --cwd " (sq (str role-worktree)) " " (grok-permission-prefix row) (extra-args-prefix row) "--minimal --rules \"$(cat " (sq (str prompt-file)) ")\" --verbatim \"$(cat " (sq (str prompt-file)) ")\"")))
       (= index 0)
       (str "; exit_code=$?; SWARMFORGE_TERMINAL_BACKEND=" (sq (:terminal-backend ctx))
            " nohup " (sq (str (fs/path (:script-dir ctx) "swarm-cleanup.sh")))
@@ -785,6 +788,10 @@
                                         :tmux-socket-dir (str (fs/parent (fs/path tmux-socket)))})]
     (println (:tmux-window-base-index ctx) (:tmux-pane-base-index ctx))))
 
+(defn test-create-role-session! [tmux-socket session]
+  (create-role-session! {:tmux-socket tmux-socket} session "Specifier")
+  (println (sh-out "tmux" "-S" tmux-socket "show-options" "-t" session "-qv" "history-limit")))
+
 (defn test-launch-command! [root agent & [extra-args]]
   (let [ctx (assoc (context root) :terminal-backend "none")
         row {:role "coder"
@@ -828,6 +835,7 @@
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
     "--test-tmux-base-indexes" (test-tmux-base-indexes! (second args))
+    "--test-create-role-session" (test-create-role-session! (second args) (nth args 2))
     (run-main! (or (first args) (System/getProperty "user.dir")))))
 
 (apply -main *command-line-args*)
