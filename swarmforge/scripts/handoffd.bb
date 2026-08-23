@@ -191,6 +191,15 @@
   (move-with-collision path (pending-dir))
   (log! "held" (str path)))
 
+(defn phantom-sender? [from]
+  (boolean (re-matches #"\(.+\)" (or from ""))))
+
+(defn sent-dir [roles sender-role]
+  (if (phantom-sender? sender-role)
+    (fs/path project-root ".swarmforge" "handoffs" "sent")
+    (fs/path (get-in roles [sender-role :worktree-path])
+             ".swarmforge" "handoffs" "sent")))
+
 (defn deliver! [roles socket sender-role path]
   (let [filename (fs/file-name path)
         message (parse-message path)
@@ -210,9 +219,7 @@
               (when-not (fs/exists? target)
                 (spit (str target) (render-message (:headers delivered) (:body delivered))))
               (notify! socket (:session role-info)))))
-        (move-with-collision path
-                             (fs/path (get-in roles [sender-role :worktree-path])
-                                      ".swarmforge" "handoffs" "sent"))
+        (move-with-collision path (sent-dir roles sender-role))
         (archive-sender! headers)
         (log! "delivered" (str path))))))
 

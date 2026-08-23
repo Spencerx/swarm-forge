@@ -352,6 +352,26 @@
       (is (= "coder" (task-lane root "htw-console-app")))
       (is (= text body)))))
 
+(deftest handoffd-delivers-new-task-note-without-moving-the-card
+  ;; Given a New Task note in the project outbox
+  ;; When handoffd --once
+  ;; Then specifier inbox has it, the card stays in specifier, and sent is on master
+  (let [root (tmp-dir)
+        roles six-pack-roles
+        sock (do (setup-pack! root roles)
+                 (pack-web root true "--test-post-task" (str root) "HTW" "Print hello")
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "specifier" (task-lane root "HTW")))
+      (is (= [] (pending-names root)))
+      (is (seq (inbox-names root roles "specifier")))
+      (is (seq (handoff-names (fs/path root ".swarmforge/handoffs/sent"))))
+      (is (empty? (handoff-names (fs/path (pack-worktree root roles "coder")
+                                         ".swarmforge/handoffs/sent"))))
+      (finally
+        (stop-tmux! sock)))))
+
 (deftest specifier-git-handoff-waits-for-attention
   ;; Given six-pack-shaped roles + card in specifier
   ;; When specifier→coder is queued and handoffd --once
@@ -499,10 +519,10 @@
       (is (= ["tmux" "-S" sock "send-keys" "-t" "swarmforge-specifier:Specifier.0" "C-j"]
              (nth argv 2))))))
 
-(deftest pack-web-post-task-injects-payload-into-master-session
-  ;; Given a tmux argv stub
+(deftest pack-web-post-task-queues-a-note-for-master
+  ;; Given a specifier pack and a tmux argv stub
   ;; When POST /api/tasks records name and text
-  ;; Then the card is created and inject-master! send-keys the Task payload
+  ;; Then the card is in specifier, a (New Task) note is in the outbox, and the pane is not injected
   (let [root (tmp-dir)
         argv-file (str (fs/path root "tmux.argv"))
         sock (str (fs/path root "tmux.sock"))
@@ -511,12 +531,18 @@
     (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
     (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
                                "--test-post-task" (str root) "htw-console-app" text)
-          argv (read-argv argv-file)]
+          queued (handoff-names (fs/path root ".swarmforge/handoffs/outbox"))
+          content (when (seq queued)
+                    (slurp (str (fs/path root ".swarmforge/handoffs/outbox" (first queued)))))]
       (is (zero? (:exit result)))
       (is (= "specifier" (task-lane root "htw-console-app")))
-      (is (= example-task-payload (last (first argv))))
-      (is (= "C-m" (last (second argv))))
-      (is (= "C-j" (last (nth argv 2)))))))
+      (is (= 1 (count queued)))
+      (is (str/includes? (str content) "from: (New Task)\n"))
+      (is (str/includes? (str content) "to: specifier\n"))
+      (is (str/includes? (str content) "type: note\n"))
+      (is (str/includes? (str content) "task: htw-console-app\n"))
+      (is (str/includes? (str content) text))
+      (is (empty? (read-argv argv-file))))))
 
 (deftest pack-web-post-chat-injects-text-as-is
   ;; Given a tmux argv stub
@@ -1001,6 +1027,42 @@
           card (first (:tasks state))]
       (is (zero? (:exit result)))
       (is (str/includes? (str (:status card)) "I'll continue with the cave map.")))))
+
+(deftest pack-web-waiting-cards-say-waiting-in-queue
+  ;; Given two specifier cards and a pane I'm sentence
+  ;; When --test-status-pane
+  ;; Then the first card has that sentence and the other says waiting in queue
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (create-task root "Holy Hand Grenade" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             "I'm specifying HTW.\nesc to interrupt · 1s\n")
+        state (json/parse-string (:out result) true)
+        by-name (into {} (map (juxt :name identity) (:tasks state)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status (get by-name "HTW"))) "I'm specifying HTW"))
+    (is (= "waiting in queue" (:status (get by-name "Holy Hand Grenade"))))))
+
+(deftest pack-web-in-process-card-gets-pane-status
+  ;; Given two coder cards and in-process mail for Holy Hand Grenade
+  ;; When --test-status-pane
+  ;; Then Holy Hand Grenade has the pane sentence and HTW says waiting in queue
+  (let [root (tmp-dir)
+        roles ["specifier" "coder"]
+        _ (setup-pack! root roles)
+        _ (create-task root "HTW" "coder")
+        _ (create-task root "Holy Hand Grenade" "coder")
+        _ (put-in-process! root roles "coder"
+                           {:from "specifier" :task "Holy Hand Grenade"})
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             "I'm merging the grenade.\nesc to interrupt · 1s\n")
+        state (json/parse-string (:out result) true)
+        by-name (into {} (map (juxt :name identity) (:tasks state)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status (get by-name "Holy Hand Grenade")))
+                       "I'm merging the grenade"))
+    (is (= "waiting in queue" (:status (get by-name "HTW"))))))
 
 (deftest pack-web-clarification-posts-to-attention-and-answers-into-the-role
   ;; Given QA posts a clarification question

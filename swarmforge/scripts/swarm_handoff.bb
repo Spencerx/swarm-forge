@@ -96,21 +96,25 @@
       (infer-role-from-worktree)
       (exit! 1 "Set SWARMFORGE_ROLE.")))
 
-(defn board-card-in-lane [lane]
+(defn board-cards-in-lane [lane]
   (let [file (fs/path (project-root) ".swarmforge" "board" "tasks.tsv")]
-    (when (fs/exists? file)
-      (some (fn [line]
-              (let [[name task-lane] (str/split line #"\t")]
-                (when (= lane task-lane)
-                  name)))
-            (str/split-lines (slurp (str file)))))))
+    (if (fs/exists? file)
+      (into []
+            (keep (fn [line]
+                    (let [[name task-lane] (str/split line #"\t")]
+                      (when (= lane task-lane) name))))
+            (str/split-lines (slurp (str file))))
+      [])))
 
 (defn with-board-task [headers sender]
   (if-not (= "git_handoff" (get headers "type"))
     headers
-    (if-let [card (board-card-in-lane sender)]
-      (assoc headers "task" card)
-      headers)))
+    (let [cards (board-cards-in-lane sender)
+          drafted (get headers "task")]
+      (cond
+        (some #{drafted} cards) headers
+        (= 1 (count cards)) (assoc headers "task" (first cards))
+        :else headers))))
 
 (defn role-worktree [role]
   (some (fn [line]

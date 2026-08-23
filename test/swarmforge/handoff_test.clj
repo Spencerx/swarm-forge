@@ -266,6 +266,28 @@
           (is (fs/exists? queued))
           (is (not (fs/exists? draft))))))))
 
+(deftest ready-for-next-prints-note-task-name-and-body
+  ;; Given a (New Task) note in the receiver inbox
+  ;; When ready_for_next runs
+  ;; Then it prints TASK_NAME and the card body
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (make-queued-handoff! root "50_20260615T000001Z_000001_from_New_Task_to_receiver.handoff"
+                          {:id "20260615T000001Z_000001_from_New_Task"
+                           :from "(New Task)"
+                           :type "note"
+                           :task "Holy Hand Grenade"
+                           :body "The grenade is placed at setup.\n"})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}
+                      (script "ready_for_next.sh"))
+          out (:out result)]
+      (is (zero? (:exit result)))
+      (is (str/includes? out "FROM: (New Task)"))
+      (is (str/includes? out "TYPE: note"))
+      (is (str/includes? out "TASK_NAME: Holy Hand Grenade"))
+      (is (str/includes? out "The grenade is placed at setup.")))))
+
 (deftest ready-for-next-task-accepts-and-resumes-single-tasks
   (let [root (tmp-dir)]
     (init-repo! root)
@@ -614,6 +636,29 @@
       (is (zero? (:exit result)))
       (is (str/includes? (str content) (str "merge_and_process sender " sha)))
       (is (not (str/includes? (str content) "Please merge this and run the tests."))))))
+
+(deftest swarm-handoff-keeps-draft-task-that-names-a-lane-card
+  ;; Given Command syntax and Holy Hand Grenade cards in the sender lane
+  ;; When swarm_handoff queues a git_handoff with task: Holy Hand Grenade
+  ;; Then the queued file keeps that task name
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root ".swarmforge" "board" "tasks.tsv")
+                      (str "Command syntax\tsender\t2026-06-15T00:00:00Z\t2026-06-15T00:00:00Z\n"
+                           "Holy Hand Grenade\tsender\t2026-06-15T00:00:01Z\t2026-06-15T00:00:01Z\n"))
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "hhg.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: Holy Hand Grenade\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "task: Holy Hand Grenade\n"))
+      (is (not (str/includes? (str content) "task: Command syntax\n"))))))
 
 (deftest swarm-handoff-from-worktree-uses-master-outbox-when-roles-copied
   ;; Given a sender worktree with a copied roles.tsv

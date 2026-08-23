@@ -119,7 +119,7 @@ Layout, top to bottom then left to right:
 
 ### Operating the dashboard
 
-**Start a task.** Click **New Task**, give a short stable **name** and the **task** text, then **OK**. That creates a card in the master lane and injects `Task: <name>` plus the text into the master agent. Downstream roles keep that name as `task:` on every `git_handoff`. Do not invent a second name in chat.
+**Start a task.** Click **New Task**, give a short stable **name** and the **task** text, then **OK**. That creates a card in the master lane and queues a `(New Task)` note to that agent (`task:` is the card name, payload is the text). The agent takes it with `ready_for_next.sh`. Downstream roles keep that name as `task:` on every `git_handoff`. Do not invent a second name in chat.
 
 **Talk to the master agent.** Type in the chat composer (Enter sends, Shift+Enter newline). The dashboard stores a durable request, injects `[id] text` into the master pane, and shows the reply when the agent answers.
 

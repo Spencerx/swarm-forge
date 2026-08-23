@@ -46,7 +46,8 @@
 (def pane-heat (atom {}))
 (def pane-status (atom {}))
 
-(declare session-name pane-target live-pane-text role-row pane-sample backend-name)
+(declare session-name pane-target live-pane-text role-row pane-sample backend-name
+         in-process-for-row in-process-task-names)
 
 (defn usage []
   (binding [*out* *err*]
@@ -186,16 +187,35 @@
       (do (swap! pane-status assoc role found) found)
       (get @pane-status role ""))))
 
-(defn task-with-status [root task]
-  (let [role (:lane task)
-        row (role-row root role)
+(defn board-tasks [root]
+  (mapv task-entry (lines (pack-board root "list"))))
+
+(defn pane-status-for [root role]
+  (let [row (role-row root role)
         text (when row (live-pane-text root role))
         backend (when row (backend-name row))]
-    (assoc task :status (im-status role text backend))))
+    (im-status role text backend)))
+
+(defn active-card-names [root role]
+  (let [row (role-row root role)
+        names (when row (in-process-task-names (in-process-for-row row)))]
+    (if (seq names)
+      (set names)
+      (if-let [card (first (filter #(= role (:lane %)) (board-tasks root)))]
+        #{(:name card)}
+        #{}))))
+
+(defn task-with-status [root task]
+  (let [role (:lane task)]
+    (assoc task :status
+           (cond
+             (= "done" role) ""
+             (contains? (active-card-names root role) (:name task))
+             (pane-status-for root role)
+             :else "waiting in queue"))))
 
 (defn tasks [root]
-  (mapv #(task-with-status root (task-entry %))
-        (lines (pack-board root "list"))))
+  (mapv #(task-with-status root %) (board-tasks root)))
 
 (defn parse-message [path]
   (let [content (slurp (str path))
@@ -514,6 +534,31 @@
 (defn dashboard-page []
   (slurp (str (fs/path script-dir "pack" "dashboard.html"))))
 
+(defn slug [s]
+  (str/replace (or s "") #"[^A-Za-z0-9]+" "_"))
+
+(defn queue-new-task-note! [root name text]
+  (let [to (master-role root)
+        now (.format java.time.format.DateTimeFormatter/ISO_INSTANT
+                     (java.time.Instant/now))
+        stamp (str/replace now #"[^0-9A-Za-z]" "")
+        body (or text "")
+        filename (str "50_" stamp "_from_New_Task_to_" (slug to) ".handoff")
+        outbox (fs/path root ".swarmforge" "handoffs" "outbox")
+        file (fs/path outbox filename)]
+    (fs/create-dirs outbox)
+    (spit (str file)
+          (str "id: " stamp "_from_New_Task\n"
+               "from: (New Task)\n"
+               "to: " to "\n"
+               "priority: 50\n"
+               "type: note\n"
+               "task: " name "\n"
+               "created_at: " now "\n"
+               "\n"
+               body
+               (when-not (str/ends-with? body "\n") "\n")))))
+
 (defn create-task! [root name text]
   (when (str/blank? name)
     (exit! 1 "Missing task name"))
@@ -521,7 +566,7 @@
               "--name" name
               "--lane" (master-role root)
               "--text" (or text ""))
-  (inject-master! root (task-payload name (or text ""))))
+  (queue-new-task-note! root name (or text "")))
 
 (defn json-ok []
   {:status 200
