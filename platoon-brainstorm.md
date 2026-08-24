@@ -65,10 +65,10 @@ pack running its own workflow.
 The Lieutenant chooses a pack type for each component after the user approves
 the system plan.
 
-- **two-pack**: Smaller or lower-risk implementation/refinement work.
-- **four-pack**: Components that need specification and architectural review.
-- **six-pack**: Major or high-risk components that need full specification, QA,
-  hardening, and final verification.
+- **two-pack**: Simple utility components that do not need acceptance tests.
+- **four-pack**: Complex components that need Gherkin acceptance tests. These
+  components tend to contain business rules.
+- **six-pack**: Components with a substantial user interface that require QA.
 
 ## Filesystem Shape
 
