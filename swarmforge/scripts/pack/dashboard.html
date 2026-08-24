@@ -50,7 +50,8 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .card .status{color:var(--muted);font-size:10px;white-space:normal;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 .card-rejected .status{color:var(--red);font-weight:700;-webkit-line-clamp:1}
 .card-del{margin-left:auto;padding:1px 6px;font-size:10px;line-height:1.2}
-.card .foot{display:flex;justify-content:space-between;gap:8px;color:var(--muted);font-size:10px;margin-top:auto}
+.card .foot{display:flex;justify-content:flex-end;gap:8px;color:var(--muted);font-size:10px;margin-top:auto}
+.card-thin{min-height:0;padding:4px 8px;gap:0}
 .timer{font-variant-numeric:tabular-nums}
 .rail{background:var(--panel);display:flex;flex-direction:column;min-height:0;overflow:hidden;font-size:12px;scrollbar-gutter:stable}
 .rail section{padding:10px 12px;border-bottom:1px solid var(--line-soft);display:flex;flex-direction:column;min-height:0}
@@ -203,9 +204,10 @@ function displayName(role) {
   return role.charAt(0).toUpperCase() + role.slice(1);
 }
 
-function cardEl(task) {
+function cardEl(task, opts) {
+  const thin = opts && opts.thin;
   const card = document.createElement("article");
-  card.className = "card";
+  card.className = thin ? "card card-thin" : "card";
   if (task.status === "REJECTED") card.classList.add("card-rejected");
   card.setAttribute("data-task-name", task.name || "");
   const title = document.createElement("div");
@@ -214,12 +216,10 @@ function cardEl(task) {
   name.className = "name";
   name.textContent = task.name;
   title.appendChild(name);
-  const foot = document.createElement("div");
-  foot.className = "foot";
-  const lane = document.createElement("span");
-  lane.textContent = task.lane;
-  foot.appendChild(lane);
+  card.appendChild(title);
   if (task.status === "REJECTED") {
+    const foot = document.createElement("div");
+    foot.className = "foot";
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "btn btn-sm card-del";
@@ -230,9 +230,9 @@ function cardEl(task) {
       openRejectEdit(task.name);
     };
     foot.appendChild(edit);
+    card.appendChild(foot);
   }
-  card.append(title, foot);
-  if (task.status) {
+  if (!thin && task.status) {
     const status = document.createElement("div");
     status.className = "status";
     status.textContent = task.status;
@@ -264,7 +264,7 @@ function columnEl(lane, tasks) {
       if (group.length > 1) {
         const wrap = document.createElement("div");
         wrap.className = "batch";
-        group.forEach((task) => wrap.appendChild(cardEl(task)));
+        group.forEach((task, idx) => wrap.appendChild(cardEl(task, {thin: idx > 0})));
         body.appendChild(wrap);
       } else {
         body.appendChild(cardEl(group[0]));

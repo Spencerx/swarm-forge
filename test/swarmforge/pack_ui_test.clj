@@ -1113,6 +1113,22 @@
     (is (str/includes? html "className = \"batch\""))
     (is (re-find #"\.batch\{[^}]*gap:0" html))))
 
+(deftest pack-dashboard-cards-drop-lane-name
+  ;; Given dashboard HTML
+  ;; When cards are rendered
+  ;; Then they do not print the agent or lane name
+  (let [html (dashboard-html (tmp-dir))]
+    (is (not (str/includes? html "lane.textContent = task.lane")))))
+
+(deftest pack-dashboard-batch-only-top-card-has-status
+  ;; Given dashboard HTML
+  ;; When a batch is rendered
+  ;; Then only the top card has a status line and the rest are thin name-only cards
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "card-thin"))
+    (is (str/includes? html "thin: idx > 0"))
+    (is (re-find #"\.card-thin\{" html))))
+
 (deftest pack-web-state-groups-in-process-batch-cards
   ;; Given two-pack and two cleaner in-process handoffs in one batch dir
   ;; When --test-state

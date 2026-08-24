@@ -736,3 +736,97 @@
           (.destroyForcibly daemon))
         (run {:dir root :ok? false} "tmux" "-S" sock "kill-server")
         (fs/delete-tree root)))))
+
+(defn write-echo-tool! [root tool]
+  (write-file (fs/path root ".swarmforge/roles.tsv")
+              (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+  (write-file (fs/path root ".swarmforge/tools" tool "bb.edn")
+              (str "{:tasks {" tool " (apply println *command-line-args*)}}\n")))
+
+(deftest clj-mutate-wrapper-is-differential-with-four-workers
+  ;; Given an installed clj-mutate wrapper
+  ;; When it is invoked with --mutate-all
+  ;; Then --mutate-all is dropped and --max-workers 4 is used
+  (let [root (tmp-dir)]
+    (try
+      (write-echo-tool! root "clj-mutate")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "clj-mutate")
+      (let [out (:out (run {:dir root}
+                           (str (fs/path root ".swarmforge/bin/clj-mutate"))
+                           "src/htw/game.clj" "--reuse-lcov" "--mutate-all"
+                           "--test-command" "bb test"))]
+        (is (str/includes? out "--max-workers 4"))
+        (is (not (str/includes? out "--mutate-all"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest clj-mutate-scan-does-not-inject-max-workers
+  ;; Given an installed clj-mutate wrapper
+  ;; When it is invoked with --scan
+  ;; Then it does not add --max-workers
+  (let [root (tmp-dir)]
+    (try
+      (write-echo-tool! root "clj-mutate")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "clj-mutate")
+      (let [out (:out (run {:dir root}
+                           (str (fs/path root ".swarmforge/bin/clj-mutate"))
+                           "src/htw/game.clj" "--scan"))]
+        (is (not (str/includes? out "--max-workers"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest gherkin-mutator-wrapper-is-differential-with-four-workers
+  ;; Given an installed gherkin-mutator wrapper
+  ;; When it is invoked with --level full
+  ;; Then the level is hard and --workers 4 is used
+  (let [root (tmp-dir)
+        aps (fs/path root "aps-src")]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path aps "bb.edn")
+                  "{:tasks {gherkin-mutator (apply println *command-line-args*)}}\n")
+      (run {:dir root :env {"SWARMFORGE_TOOL_SRC" (str aps)
+                            "PATH" (System/getenv "PATH")
+                            "GIT_CONFIG_NOSYSTEM" "1"}}
+           (script "swarm_tool.sh") "ensure" "gherkin-mutator")
+      (let [out (:out (run {:dir root}
+                           (str (fs/path root ".swarmforge/bin/gherkin-mutator"))
+                           "--feature" "features/a.feature" "--level" "full"
+                           "--runner-worker" "true"))]
+        (is (str/includes? out "--level hard"))
+        (is (str/includes? out "--workers 4"))
+        (is (not (str/includes? out "--level full"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest constitution-tool-wrappers-do-not-run-concurrently
+  ;; Given two constitution tool wrappers
+  ;; When they are started together
+  ;; Then the second starts only after the first finishes
+  (let [root (tmp-dir)
+        log (str (fs/path root "tool.log"))]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path root ".swarmforge/tools/crap4clj/bb.edn")
+                  (str "{:tasks {crap4clj (do (spit " (pr-str log)
+                       " (str (System/currentTimeMillis) \" start\\n\") :append true)"
+                       " (Thread/sleep 400)"
+                       " (spit " (pr-str log)
+                       " (str (System/currentTimeMillis) \" end\\n\") :append true))}}\n"))
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "crap4clj")
+      (let [bin (str (fs/path root ".swarmforge/bin/crap4clj"))
+            a (future (run {:dir root} bin))
+            _ (Thread/sleep 50)
+            b (future (run {:dir root} bin))]
+        (is (zero? (:exit @a)))
+        (is (zero? (:exit @b)))
+        (let [times (->> (str/split-lines (slurp log))
+                         (map #(Long/parseLong (first (str/split % #" "))))
+                         vec)]
+          (is (= 4 (count times)))
+          (is (<= (nth times 1) (nth times 2)))))
+      (finally
+        (fs/delete-tree root)))))
+
