@@ -446,10 +446,32 @@
       (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/cloverage")))]
         (is (str/includes? wrapper "cloverage.coverage"))
         (is (str/includes? wrapper "cloverage/cloverage"))
-        (is (str/includes? wrapper "\"src\" \"test\""))
+        (is (str/includes? wrapper "\"src\""))
+        (is (str/includes? wrapper "\"spec\""))
+        (is (str/includes? wrapper "\"test\""))
+        (is (str/includes? wrapper "-s spec"))
+        (is (str/includes? wrapper "-r speclj"))
+        (is (str/includes? wrapper "speclj/speclj"))
         (is (not (str/includes? wrapper "crap4clj")))
         (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "cloverage"))))
         (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "Cloverage")))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-speclj-uses-speclj-main
+  ;; Given a pack project
+  ;; When swarm_tool.sh ensure speclj
+  ;; Then the wrapper runs speclj.main -c spec, not speclj.cli
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "speclj")
+      (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/speclj")))]
+        (is (str/includes? wrapper "speclj.main"))
+        (is (str/includes? wrapper "-c spec"))
+        (is (str/includes? wrapper "3.13.0"))
+        (is (not (str/includes? wrapper "speclj.cli"))))
       (finally
         (fs/delete-tree root)))))
 

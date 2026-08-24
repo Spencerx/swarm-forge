@@ -18,9 +18,12 @@
    "clj-mutate" {:source "github.com/unclebob/clj-mutate" :bb-task "clj-mutate"
                  :needs ["cloverage"]}
    "cloverage" {:mvn "cloverage/cloverage" :main "cloverage.coverage"
-                :paths ["src" "test"]}
-   "speclj" {:mvn "speclj/speclj" :main "speclj.cli"
-             :paths ["src" "spec" "test"]}
+                :paths ["src" "spec" "test"]
+                :extra-deps {"speclj/speclj" "3.13.0"}
+                :args ["-p" "src" "-s" "spec" "-s" "test" "-r" "speclj"]}
+   "speclj" {:mvn "speclj/speclj" :main "speclj.main" :version "3.13.0"
+             :paths ["src" "spec" "test"]
+             :args ["-c" "spec"]}
    "speclj-structure-check" {:source "github.com/unclebob/speclj-structure-check"
                              :bb-task "check"}
    "crap4go" {:source "github.com/unclebob/crap4go" :bb-task "crap4go"}
@@ -126,15 +129,28 @@
     (fs/set-posix-file-permissions target "rwxr-xr-x")
     target))
 
-(defn write-mvn-wrapper! [root tool mvn main paths]
-  (let [target (wrapper-path root (canonical-tool tool))
-        path-vec (or (seq paths) [])
-        deps (str "{:paths [" (str/join " " (map pr-str path-vec)) "]"
-                  " :deps {" mvn " {:mvn/version \"RELEASE\"}}}")]
+(defn edn-paths [paths]
+  (str/join " " (map pr-str (or paths []))))
+
+(defn coord-dep [coord version]
+  (str coord " {:mvn/version " (pr-str version) "}"))
+
+(defn edn-deps [spec]
+  (let [main (coord-dep (:mvn spec) (or (:version spec) "RELEASE"))
+        extra (map (fn [[coord version]] (coord-dep coord version))
+                   (or (:extra-deps spec) {}))]
+    (str/join " " (cons main extra))))
+
+(defn write-mvn-wrapper! [root tool spec]
+  (let [target (wrapper-path root tool)
+        deps (str "{:paths [" (edn-paths (:paths spec)) "] :deps {" (edn-deps spec) "}}")
+        args (str/join " " (or (:args spec) []))]
     (fs/create-dirs (fs/parent target))
     (spit (str target)
           (str "#!/usr/bin/env bash\n"
-               "exec clojure -Sdeps " (sq deps) " -M -m " main " \"$@\"\n"))
+               "exec clojure -Sdeps " (sq deps) " -M -m " (:main spec)
+               (when (seq args) (str " " args))
+               " \"$@\"\n"))
     (fs/set-posix-file-permissions target "rwxr-xr-x")
     target))
 
@@ -145,8 +161,7 @@
         target (if-let [bb-task (:bb-task spec)]
                  (write-bb-wrapper! root name bb-task
                                     (ensure-source! root (:source spec)))
-                 (write-mvn-wrapper! root name (:mvn spec) (:main spec)
-                                     (:paths spec)))]
+                 (write-mvn-wrapper! root name spec))]
     (println "INSTALLED:" name (str target))))
 
 (defn ensure-tool! [tool]

@@ -50,7 +50,8 @@
 (def pane-status (atom {}))
 
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name
-         in-process-for-row in-process-task-names approvals)
+         in-process-for-row in-process-task-names approvals
+         handoff-files batch-dirs in-process-dir)
 
 (defn usage []
   (binding [*out* *err*]
@@ -165,7 +166,10 @@
 
 (defn pane-sentences [text]
   (->> (str/split-lines (or text ""))
-       (mapcat #(str/split % #"(?<=[.!?…])\s+"))
+       (map str/trim)
+       (remove str/blank?)
+       (str/join " ")
+       (#(str/split % #"(?<=[.!?…])\s+"))
        (map str/trim)
        (remove str/blank?)
        vec))
@@ -241,8 +245,39 @@
              (pane-status-for root role)
              :else "waiting in queue"))))
 
+(defn batch-task-names [dir]
+  (in-process-task-names (handoff-files dir)))
+
+(defn multi-batches [dir]
+  (for [b (batch-dirs dir)
+        :let [names (batch-task-names b)]
+        :when (next names)]
+    [(fs/file-name b) names]))
+
+(defn index-batches [idx pairs]
+  (reduce (fn [m [id names]]
+            (reduce #(assoc %1 %2 id) m names))
+          idx
+          pairs))
+
+(defn batch-index [root]
+  (reduce (fn [idx row]
+            (let [wt (nth row 2)]
+              (if (str/blank? wt)
+                idx
+                (index-batches idx
+                               (concat (multi-batches (fs/path wt ".swarmforge" "handoffs" "inbox" "completed"))
+                                       (multi-batches (in-process-dir wt)))))))
+          {}
+          (role-rows root)))
+
 (defn tasks [root]
-  (mapv #(task-with-status root %) (board-tasks root)))
+  (let [idx (batch-index root)]
+    (mapv (fn [task]
+            (if-let [batch (get idx (:name task))]
+              (assoc (task-with-status root task) :batch batch)
+              (task-with-status root task)))
+          (board-tasks root))))
 
 (defn parse-message [path]
   (let [content (slurp (str path))

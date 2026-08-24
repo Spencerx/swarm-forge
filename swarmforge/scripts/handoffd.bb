@@ -171,16 +171,63 @@
           (seq rec)
           (= rec others)))))
 
+(defn listed-handoffs [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/regular-file? %)
+                       (str/ends-with? (fs/file-name %) ".handoff")))
+         vec)
+    []))
+
+(defn listed-batches [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/directory? %)
+                       (str/starts-with? (fs/file-name %) "batch_")))
+         vec)
+    []))
+
+(defn completed-handoffs [role-info]
+  (let [dir (fs/path (:worktree-path role-info)
+                     ".swarmforge" "handoffs" "inbox" "completed")]
+    (into (listed-handoffs dir)
+          (mapcat listed-handoffs (listed-batches dir)))))
+
+(defn finished-task-names [role-info]
+  (if-not role-info
+    #{}
+    (->> (completed-handoffs role-info)
+         (map #(get (:headers (parse-message %)) "task"))
+         (remove str/blank?)
+         set)))
+
+(defn names-in-lane [lane]
+  (->> (read-lines (board-file))
+       (remove str/blank?)
+       (map #(str/split % #"\t"))
+       (filter #(= lane (second %)))
+       (map first)))
+
+(defn terminal-task-names [roles headers]
+  (let [from (get headers "from")
+        named (get headers "task")
+        finished (finished-task-names (get roles from))
+        in-lane (set (names-in-lane from))]
+    (->> (cons named (filter finished in-lane))
+         (remove str/blank?)
+         distinct
+         vec)))
+
 (defn update-board! [roles headers]
-  (when (fs/exists? (board-file))
-    (let [task (get headers "task")
-          recipients (recipient-list headers)]
-      (when (and (= "git_handoff" (get headers "type"))
-                 (not (str/blank? task))
-                 recipients)
-        (if (terminal-broadcast? roles headers)
-          (pack-board! "done" "--name" task)
-          (pack-board! "move" "--name" task "--lane" (first recipients)))))))
+  (when (and (fs/exists? (board-file))
+             (= "git_handoff" (get headers "type"))
+             (seq (recipient-list headers)))
+    (if (terminal-broadcast? roles headers)
+      (doseq [name (terminal-task-names roles headers)]
+        (pack-board! "done" "--name" name))
+      (let [task (get headers "task")]
+        (when-not (str/blank? task)
+          (pack-board! "move" "--name" task "--lane" (first (recipient-list headers))))))))
 
 (defn single-recipient? [headers]
   (let [recipients (recipient-list headers)]

@@ -482,6 +482,56 @@
       (finally
         (stop-tmux! sock)))))
 
+(deftest terminal-handoff-dones-finished-batch-cards-in-sender-lane
+  ;; Given two-pack, Command syntax and validation in cleaner, those names in a
+  ;; completed cleaner batch, HTW still in cleaner but not in that batch
+  ;; When cleaner queues a terminal git_handoff named HTW
+  ;; Then Command syntax and validation are done and HTW is done
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        batch (fs/path (pack-worktree root roles "cleaner")
+                       ".swarmforge/handoffs/inbox/completed"
+                       "batch_20260824T150500Z_000001")
+        sock (do (setup-pack! root roles)
+                 (create-task root "HTW" "cleaner")
+                 (create-task root "Command syntax" "cleaner")
+                 (create-task root "validation" "cleaner")
+                 (write-file (fs/path batch "50_command.handoff")
+                             "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: Command syntax\n\npayload\n")
+                 (write-file (fs/path batch "50_validation.handoff")
+                             "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: validation\n\npayload\n")
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "HTW"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "HTW")))
+      (is (= "done" (task-lane root "Command syntax")))
+      (is (= "done" (task-lane root "validation")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest terminal-handoff-leaves-unfinished-lane-cards
+  ;; Given two-pack, HTW finished in a completed batch, Command syntax only in the lane
+  ;; When cleaner terminals with task HTW
+  ;; Then HTW is done and Command syntax stays in cleaner
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        done (fs/path (pack-worktree root roles "cleaner")
+                      ".swarmforge/handoffs/inbox/completed")
+        sock (do (setup-pack! root roles)
+                 (create-task root "HTW" "cleaner")
+                 (create-task root "Command syntax" "cleaner")
+                 (write-file (fs/path done "50_htw.handoff")
+                             "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: HTW\n\npayload\n")
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "HTW"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "HTW")))
+      (is (= "cleaner" (task-lane root "Command syntax")))
+      (finally
+        (stop-tmux! sock)))))
+
 (deftest six-pack-qa-broadcast-marks-the-card-done
   ;; Given six-pack, card in QA
   ;; When QA queues git_handoff to every other role
@@ -1056,6 +1106,33 @@
   (let [html (dashboard-html (tmp-dir))]
     (is (str/includes? html "task.status"))))
 
+(deftest pack-dashboard-html-flushes-batched-cards
+  ;; When serving dashboard.html
+  ;; Then a batch group has no vertical gap between its cards
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "className = \"batch\""))
+    (is (re-find #"\.batch\{[^}]*gap:0" html))))
+
+(deftest pack-web-state-groups-in-process-batch-cards
+  ;; Given two-pack and two cleaner in-process handoffs in one batch dir
+  ;; When --test-state
+  ;; Then those tasks share a batch id
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        _ (setup-pack! root roles)
+        _ (create-task root "Command syntax" "cleaner")
+        _ (create-task root "validation" "cleaner")
+        batch "batch_20260824T150500Z_000001"
+        dir (fs/path (in-process-dir root roles "cleaner") batch)]
+    (write-file (fs/path dir "50_command.handoff")
+                "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: Command syntax\n\npayload\n")
+    (write-file (fs/path dir "50_validation.handoff")
+                "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: validation\n\npayload\n")
+    (let [by-name (into {} (map (juxt :name identity) (:tasks (web-state root))))]
+      (is (= (get-in by-name ["Command syntax" :batch])
+             (get-in by-name ["validation" :batch])))
+      (is (some? (get-in by-name ["Command syntax" :batch]))))))
+
 (deftest pack-dashboard-new-task-alerts-on-duplicate
   ;; Given dashboard HTML
   ;; Then duplicate create keeps the dialog and alerts
@@ -1148,6 +1225,19 @@
           card (first (:tasks state))]
       (is (zero? (:exit result)))
       (is (str/includes? (str (:status card)) "I'll continue with the cave map.")))))
+
+(deftest pack-web-card-status-joins-wrapped-pane-lines
+  ;; Given an I'll sentence split across two pane lines
+  ;; When --test-status-pane
+  ;; Then status is the full sentence with a space at the wrap
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")]
+    (let [result (pack-web-env root {} "--test-status-pane" (str root)
+                               "I'll continue with the\ncave map for HTW.\n")
+          card (first (:tasks (json/parse-string (:out result) true)))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str (:status card)) "I'll continue with the cave map for HTW.")))))
 
 (deftest pack-web-card-status-ignores-handoff-mail-banner
   ;; Given an I'll sentence and a later If idle, run ready_for_next.sh banner

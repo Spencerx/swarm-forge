@@ -42,6 +42,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .col{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-start;min-height:0;max-height:100%}
 .col h3{margin:0 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
 .col-body{display:flex;flex-direction:column;align-items:flex-start;gap:8px;flex:1;min-height:100px;overflow:auto;padding:8px;background:rgba(255,255,255,.35);border:1px dashed #c5cbc2;border-radius:10px;width:max-content;min-width:var(--card-min-w)}
+.batch{display:flex;flex-direction:column;gap:0;width:max-content;min-width:var(--card-min-w)}
 .card{background:var(--card);border:1px solid #d0cbb8;border-radius:8px;padding:7px 8px;font-size:11px;width:max-content;max-width:var(--card-max-w);min-width:var(--card-min-w);min-height:var(--card-min-h);cursor:pointer;display:flex;flex-direction:column;gap:3px}
 .card:hover{border-color:#a89f7e}
 .card .title{font-weight:700;font-size:12px}
@@ -253,7 +254,25 @@ function columnEl(lane, tasks) {
   const body = document.createElement("div");
   body.className = "col-body";
   body.id = "lane-" + lane;
-  tasks.filter((task) => task.lane === lane).forEach((task) => body.appendChild(cardEl(task)));
+  const mine = tasks.filter((task) => task.lane === lane);
+  let i = 0;
+  while (i < mine.length) {
+    const id = mine[i].batch;
+    if (id) {
+      const group = [];
+      while (i < mine.length && mine[i].batch === id) group.push(mine[i++]);
+      if (group.length > 1) {
+        const wrap = document.createElement("div");
+        wrap.className = "batch";
+        group.forEach((task) => wrap.appendChild(cardEl(task)));
+        body.appendChild(wrap);
+      } else {
+        body.appendChild(cardEl(group[0]));
+      }
+    } else {
+      body.appendChild(cardEl(mine[i++]));
+    }
+  }
   col.append(heading, body);
   return col;
 }
