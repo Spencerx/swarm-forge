@@ -532,6 +532,37 @@
       (finally
         (stop-tmux! sock)))))
 
+(deftest terminal-handoff-dones-in-process-batch-cards
+  ;; Given two-pack, one liners/validate/HHG in an in-process cleaner batch,
+  ;; and Command syntax in cleaner but not in that batch
+  ;; When cleaner terminals with task one liners before done_with_current
+  ;; Then the three batch cards are done and Command syntax stays in cleaner
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        batch (fs/path (in-process-dir root roles "cleaner")
+                       "batch_20260824T202830Z_000001")
+        sock (do (setup-pack! root roles)
+                 (create-task root "one liners" "cleaner")
+                 (create-task root "validate" "cleaner")
+                 (create-task root "Holy Hand Grenade" "cleaner")
+                 (create-task root "Command syntax" "cleaner")
+                 (write-file (fs/path batch "50_oneliners.handoff")
+                             "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: one liners\n\npayload\n")
+                 (write-file (fs/path batch "50_validate.handoff")
+                             "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: validate\n\npayload\n")
+                 (write-file (fs/path batch "50_hhg.handoff")
+                             "from: coder\nto: cleaner\npriority: 50\ntype: git_handoff\ntask: Holy Hand Grenade\n\npayload\n")
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "one liners"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "one liners")))
+      (is (= "done" (task-lane root "validate")))
+      (is (= "done" (task-lane root "Holy Hand Grenade")))
+      (is (= "cleaner" (task-lane root "Command syntax")))
+      (finally
+        (stop-tmux! sock)))))
+
 (deftest six-pack-qa-broadcast-marks-the-card-done
   ;; Given six-pack, card in QA
   ;; When QA queues git_handoff to every other role
@@ -818,6 +849,13 @@
     (is (not (str/includes? html "Open SL")))
     (is (not (str/includes? html "sl-therm")))
     (is (not (str/includes? html "merger")))))
+
+(deftest pack-dashboard-has-no-top-bar-open-master
+  ;; Given dashboard HTML
+  ;; Then the top bar has no Open master button; the rail still does
+  (let [html (dashboard-html (tmp-dir))]
+    (is (not (str/includes? html "id=\"btn-open-master\"")))
+    (is (str/includes? html "id=\"btn-open-master-rail\""))))
 
 (deftest pack-agent-page-polls-live-pane
   ;; When serving the agent session window

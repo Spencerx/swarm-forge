@@ -800,33 +800,20 @@
       (finally
         (fs/delete-tree root)))))
 
-(deftest constitution-tool-wrappers-do-not-run-concurrently
-  ;; Given two constitution tool wrappers
-  ;; When they are started together
-  ;; Then the second starts only after the first finishes
-  (let [root (tmp-dir)
-        log (str (fs/path root "tool.log"))]
+(deftest constitution-tool-wrappers-do-not-use-a-lock-file
+  ;; Given an installed constitution tool wrapper
+  ;; When it is written
+  ;; Then it does not take a project lock directory
+  (let [root (tmp-dir)]
     (try
       (write-file (fs/path root ".swarmforge/roles.tsv")
                   (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
       (write-file (fs/path root ".swarmforge/tools/crap4clj/bb.edn")
-                  (str "{:tasks {crap4clj (do (spit " (pr-str log)
-                       " (str (System/currentTimeMillis) \" start\\n\") :append true)"
-                       " (Thread/sleep 400)"
-                       " (spit " (pr-str log)
-                       " (str (System/currentTimeMillis) \" end\\n\") :append true))}}\n"))
+                  "{:tasks {crap4clj identity}}\n")
       (run {:dir root} (script "swarm_tool.sh") "ensure" "crap4clj")
-      (let [bin (str (fs/path root ".swarmforge/bin/crap4clj"))
-            a (future (run {:dir root} bin))
-            _ (Thread/sleep 50)
-            b (future (run {:dir root} bin))]
-        (is (zero? (:exit @a)))
-        (is (zero? (:exit @b)))
-        (let [times (->> (str/split-lines (slurp log))
-                         (map #(Long/parseLong (first (str/split % #" "))))
-                         vec)]
-          (is (= 4 (count times)))
-          (is (<= (nth times 1) (nth times 2)))))
+      (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/crap4clj")))]
+        (is (not (str/includes? wrapper "constitution-tools.lock")))
+        (is (not (str/includes? wrapper "SWARMFORGE_TOOL_HELD"))))
       (finally
         (fs/delete-tree root)))))
 

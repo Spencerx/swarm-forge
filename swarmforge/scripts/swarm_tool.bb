@@ -119,16 +119,6 @@
       (clone-source! dir source))
     dir))
 
-(defn lock-bash []
-  (str "ROOT=\"$(cd \"$(dirname \"$0\")/../..\" && pwd)\"\n"
-       "LOCKDIR=\"$ROOT/.swarmforge/constitution-tools.lock\"\n"
-       "if [ -z \"${SWARMFORGE_TOOL_HELD:-}\" ]; then\n"
-       "  export SWARMFORGE_TOOL_HELD=1\n"
-       "  mkdir -p \"$ROOT/.swarmforge\"\n"
-       "  while ! mkdir \"$LOCKDIR\" 2>/dev/null; do sleep 0.05; done\n"
-       "  trap 'rmdir \"$LOCKDIR\" 2>/dev/null' EXIT\n"
-       "fi\n"))
-
 (defn mutate-rewrite-bash []
   (str "args=()\n"
        "scan=\n"
@@ -165,7 +155,7 @@
 
 (defn write-wrapper! [path body]
   (fs/create-dirs (fs/parent path))
-  (spit (str path) (str "#!/usr/bin/env bash\n" (lock-bash) body))
+  (spit (str path) (str "#!/usr/bin/env bash\n" body))
   (fs/set-posix-file-permissions path "rwxr-xr-x")
   path)
 
@@ -175,7 +165,7 @@
     (write-wrapper!
      target
      (str (rewrite-bash tool)
-          "bb --config " (sq config) " " bb-task " \"$@\"\n"))))
+          "exec bb --config " (sq config) " " bb-task " \"$@\"\n"))))
 
 (defn edn-paths [paths]
   (str/join " " (map pr-str (or paths []))))
@@ -196,7 +186,7 @@
     (write-wrapper!
      target
      (str (rewrite-bash tool)
-          "clojure -Sdeps " (sq deps) " -M -m " (:main spec)
+          "exec clojure -Sdeps " (sq deps) " -M -m " (:main spec)
           (when (seq args) (str " " args))
           " \"$@\"\n"))))
 

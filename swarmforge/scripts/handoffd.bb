@@ -187,16 +187,17 @@
          vec)
     []))
 
-(defn completed-handoffs [role-info]
+(defn inbox-handoffs [role-info state]
   (let [dir (fs/path (:worktree-path role-info)
-                     ".swarmforge" "handoffs" "inbox" "completed")]
+                     ".swarmforge" "handoffs" "inbox" state)]
     (into (listed-handoffs dir)
           (mapcat listed-handoffs (listed-batches dir)))))
 
 (defn finished-task-names [role-info]
   (if-not role-info
     #{}
-    (->> (completed-handoffs role-info)
+    (->> (concat (inbox-handoffs role-info "completed")
+                 (inbox-handoffs role-info "in_process"))
          (map #(get (:headers (parse-message %)) "task"))
          (remove str/blank?)
          set)))

@@ -103,7 +103,6 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
     <span class="meta" id="pack-meta"><span class="dot">●</span> live</span>
     <span class="spacer"></span>
     <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
-    <button class="btn" type="button" id="btn-open-master">Open</button>
     <button class="btn btn-danger" type="button" id="teardown-btn">Teardown</button>
   </header>
   <p id="error" class="error"></p>
@@ -293,8 +292,6 @@ function renderChrome(data) {
   dot.className = "dot";
   dot.textContent = "●";
   $("pack-meta").append(dot, " live · master = " + master);
-  $("btn-open-master").textContent = "Open " + master;
-  $("btn-open-master").setAttribute("data-open-agent", masterRole);
   $("btn-open-master-rail").textContent = "Open " + master;
   $("btn-open-master-rail").setAttribute("data-open-agent", masterRole);
   $("master-title").textContent = master;
