@@ -407,7 +407,61 @@
         (is (not (str/includes? (:err missing) "Unknown tool")))
         (is (str/includes? (str (:err help) (:out help)) "clj-mutate"))
         (is (str/includes? (str (:err help) (:out help)) "crap4clj"))
-        (is (str/includes? (str (:err help) (:out help)) "dry4clj")))
+        (is (str/includes? (str (:err help) (:out help)) "dry4clj"))
+        (is (str/includes? (str (:err help) (:out help)) "cloverage")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-cloverage-invokes-cloverage
+  ;; Given a pack project
+  ;; When swarm_tool.sh ensure cloverage
+  ;; Then the wrapper launches cloverage.coverage, not crap4clj
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "cloverage")
+      (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/cloverage")))]
+        (is (str/includes? wrapper "cloverage.coverage"))
+        (is (str/includes? wrapper "cloverage/cloverage"))
+        (is (not (str/includes? wrapper "crap4clj")))
+        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "cloverage")))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-crap4clj-also-installs-cloverage
+  ;; Given a pack project with local crap4clj source
+  ;; When swarm_tool.sh ensure crap4clj
+  ;; Then both crap4clj and cloverage wrappers are installed
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path root ".swarmforge/tools/crap4clj/bb.edn")
+                  "{:tasks {crap4clj identity}}\n")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "crap4clj")
+      (is (fs/executable? (fs/path root ".swarmforge/bin/crap4clj")))
+      (is (fs/executable? (fs/path root ".swarmforge/bin/cloverage")))
+      (is (str/includes? (slurp (str (fs/path root ".swarmforge/bin/cloverage")))
+                         "cloverage.coverage"))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest swarm-tool-ensure-clj-mutate-also-installs-cloverage
+  ;; Given a pack project with local clj-mutate source
+  ;; When swarm_tool.sh ensure clj-mutate
+  ;; Then both clj-mutate and cloverage wrappers are installed
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (write-file (fs/path root ".swarmforge/tools/clj-mutate/bb.edn")
+                  "{:tasks {clj-mutate identity}}\n")
+      (run {:dir root} (script "swarm_tool.sh") "ensure" "clj-mutate")
+      (is (fs/executable? (fs/path root ".swarmforge/bin/clj-mutate")))
+      (is (fs/executable? (fs/path root ".swarmforge/bin/cloverage")))
+      (is (str/includes? (slurp (str (fs/path root ".swarmforge/bin/cloverage")))
+                         "cloverage.coverage"))
       (finally
         (fs/delete-tree root)))))
 
