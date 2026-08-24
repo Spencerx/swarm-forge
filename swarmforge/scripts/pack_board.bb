@@ -16,8 +16,8 @@
        "  pack_board.sh list [--root <dir>]\n"
        "  pack_board.sh lanes [--root <dir>]\n"
        "  pack_board.sh master-lane [--root <dir>]\n"
-       "  pack_board.sh archive --role <role> --name <name> [--root <dir>]\n"
-       "  pack_board.sh archive <role> <name>\n"
+       "  pack_board.sh archive --role <role> [--root <dir>]\n"
+       "  pack_board.sh archive <role>\n"
        "  pack_board.sh archive-all [--root <dir>]\n"
        "  pack_board.sh delete --name <name> [--root <dir>]\n"
        "  pack_board.sh delete <name>"))
@@ -213,25 +213,20 @@
   (or (System/getenv "SWARMFORGE_PANE_STUB")
       (tmux-pane root role)))
 
-(defn archive-session! [root role task]
-  (when (and (not (str/blank? role)) (not (str/blank? task)))
+(defn archive-session! [root role]
+  (when-not (str/blank? role)
     (when-let [text (pane-text root role)]
-      (let [file (fs/path root ".swarmforge" "sessions" role task "pane.txt")]
+      (let [file (fs/path root ".swarmforge" "sessions" role "pane.txt")]
         (fs/create-dirs (fs/parent file))
         (spit (str file) text)))))
 
 (defn archive-role [opts]
   (or (:role opts) (second (:positional opts))))
 
-(defn archive-task [opts]
-  (or (:name opts) (nth (:positional opts) 2 nil)))
-
 (defn archive! [opts]
-  (let [role (archive-role opts)
-        task (archive-task opts)]
+  (let [role (archive-role opts)]
     (require-value! role "role")
-    (require-value! task "task name")
-    (archive-session! (resolve-root opts) role task)))
+    (archive-session! (resolve-root opts) role)))
 
 (defn live-card [line]
   (let [[name lane] (str/split line #"\t")]
@@ -241,9 +236,13 @@
       [name lane])))
 
 (defn archive-all! [opts]
-  (let [root (resolve-root opts)]
-    (doseq [[name lane] (keep live-card (read-rows (tasks-file root)))]
-      (archive-session! root lane name))))
+  (let [root (resolve-root opts)
+        roles (->> (read-rows (tasks-file root))
+                   (keep live-card)
+                   (map second)
+                   distinct)]
+    (doseq [role roles]
+      (archive-session! root role))))
 
 (defn delete! [opts]
   (let [name (task-name opts)

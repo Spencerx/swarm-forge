@@ -58,6 +58,10 @@ message: <one line, max 80 chars>
 - `ready_for_next.sh` dispatches to the task or batch helper configured for
   your role. For `git_handoff` it merges the inbound commit
   (`merge_and_process.sh <sender> <commit>`).
+- If merge_and_process or ready_for_next reports a merge conflict, resolve
+  every conflicted file, `git add` them, and commit. You own conflict
+  resolution. Do not invent a new `git merge`. Parallel cards on one tree
+  will conflict; that is expected.
 - If it prints `NO_TASK`, stop waiting for work.
 - If it prints `TASK: <path>`, treat the printed `PAYLOAD` as the task.
 - If it prints `TASK_NAME: <name>`, use that as the stable task name for any

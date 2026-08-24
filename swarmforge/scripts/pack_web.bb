@@ -34,6 +34,7 @@
        "  pack_web.sh --test-answer-clarification <root> <id> <text>\n"
        "  pack_web.sh --test-task <root> <name>\n"
        "  pack_web.sh --test-delete-task <root> <name>\n"
+       "  pack_web.sh --test-retry-task <root> <name> <text>\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
 (def example-task-name "htw-console-app")
@@ -615,18 +616,84 @@
    :headers {"Content-Type" "application/json"}
    :body (json/generate-string {:error message})})
 
+(defn handoff-dirs [root]
+  (->> (role-rows root)
+       (map #(nth % 2 nil))
+       (remove str/blank?)
+       (cons (str root))
+       distinct
+       (mapv #(fs/path % ".swarmforge" "handoffs"))))
+
+(defn glob-handoffs [dir]
+  (if (fs/directory? dir)
+    (vec (fs/glob dir "**/*.handoff"))
+    []))
+
+(defn handoff-task [path]
+  (get-in (parse-message path) [:headers "task"]))
+
+(defn task-handoffs [root name]
+  (->> (handoff-dirs root)
+       (mapcat glob-handoffs)
+       (filter #(= name (handoff-task %)))
+       vec))
+
+(defn copy-into [dir path]
+  (when (fs/regular-file? path)
+    (fs/copy path (fs/path dir (fs/file-name path)) {:replace-existing true})))
+
+(defn archive-rejected! [root name]
+  (let [dir (fs/path root ".swarmforge" "rejected-tasks" name)]
+    (fs/create-dirs dir)
+    (copy-into dir (fs/path root ".swarmforge" "board" (str name ".txt")))
+    (copy-into dir (fs/path root ".swarmforge" "notify" (str "reject-" name)))
+    (doseq [path (task-handoffs root name)]
+      (copy-into dir path))))
+
+(defn drop-task-handoffs! [root name]
+  (doseq [path (task-handoffs root name)]
+    (fs/delete-if-exists path)))
+
+(defn reject-notify [root name]
+  (fs/path root ".swarmforge" "notify" (str "reject-" name)))
+
 (defn delete-task! [root name]
   (when (str/blank? name)
     (throw (ex-info "Missing task name" {:http-status 400})))
   (when-not (rejected-task? root name)
     (throw (ex-info (str "Not rejected: " name) {:http-status 400})))
+  (archive-rejected! root name)
+  (drop-task-handoffs! root name)
   (pack-board root "delete" "--name" name)
-  (fs/delete-if-exists (fs/path root ".swarmforge" "notify" (str "reject-" name))))
+  (fs/delete-if-exists (reject-notify root name)))
+
+(defn retry-task! [root name text]
+  (when (str/blank? name)
+    (throw (ex-info "Missing task name" {:http-status 400})))
+  (when-not (rejected-task? root name)
+    (throw (ex-info (str "Not rejected: " name) {:http-status 400})))
+  (let [body (or text "")
+        file (fs/path root ".swarmforge" "board" (str name ".txt"))]
+    (when-not (str/blank? body)
+      (spit (str file) (if (str/ends-with? body "\n") body (str body "\n"))))
+    (drop-task-handoffs! root name)
+    (fs/delete-if-exists (reject-notify root name))
+    (queue-new-task-note! root name (if (str/blank? body)
+                                      (if (fs/regular-file? file) (slurp (str file)) "")
+                                      body))))
 
 (defn post-delete-task [root body]
   (let [{:keys [name]} (json/parse-string (or body "{}") true)]
     (try
       (delete-task! root name)
+      (json-ok)
+      (catch Exception e
+        (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
+
+(defn post-retry-task [root body]
+  (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
+    (try
+      (retry-task! root name text)
       (json-ok)
       (catch Exception e
         (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
@@ -849,11 +916,14 @@
     (some #(when (= task (fs/file-name (fs/parent %))) %) files)))
 
 (defn recorded-pane [root role]
-  (let [files (pane-files root role)
-        chosen (or (pane-for-task files (in-process-task root role))
-                   (last (sort-by str files)))]
-    (when chosen
-      (slurp (str chosen)))))
+  (let [direct (fs/path root ".swarmforge" "sessions" role "pane.txt")]
+    (if (fs/regular-file? direct)
+      (slurp (str direct))
+      (let [files (pane-files root role)
+            chosen (or (pane-for-task files (in-process-task root role))
+                       (last (sort-by str files)))]
+        (when chosen
+          (slurp (str chosen)))))))
 
 (defn pane-content [root role]
   (or (not-empty (capture-pane root role))
@@ -1045,6 +1115,7 @@
   (cond
     (= "/api/tasks" uri) (post-tasks root body)
     (= "/api/tasks/delete" uri) (post-delete-task root body)
+    (= "/api/tasks/retry" uri) (post-retry-task root body)
     (= "/api/chat" uri) (post-chat root body)
     (= "/api/teardown" uri) (teardown-response root body)
     (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri)
@@ -1084,6 +1155,18 @@
                              {:method "POST"
                               :uri "/api/tasks/delete"
                               :body (json/generate-string {:name name})})]
+    (print (:body resp))
+    (flush)
+    (when-not (= 200 (:status resp))
+      (binding [*out* *err*]
+        (println (:body resp)))
+      (System/exit 1))))
+
+(defn test-retry-task! [root name text]
+  (let [resp (handle-request (require-root! root)
+                             {:method "POST"
+                              :uri "/api/tasks/retry"
+                              :body (json/generate-string {:name name :text (or text "")})})]
     (print (:body resp))
     (flush)
     (when-not (= 200 (:status resp))
@@ -1304,6 +1387,7 @@
     "--test-answer-clarification" (test-answer-clarification! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-task" (test-task! (second args) (nth args 2 nil))
     "--test-delete-task" (test-delete-task! (second args) (nth args 2 nil))
+    "--test-retry-task" (test-retry-task! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))

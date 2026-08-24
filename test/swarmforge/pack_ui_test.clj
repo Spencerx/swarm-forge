@@ -179,6 +179,9 @@
 (defn pane-path [root role task]
   (fs/path root ".swarmforge/sessions" role task "pane.txt"))
 
+(defn role-pane-path [root role]
+  (fs/path root ".swarmforge/sessions" role "pane.txt"))
+
 (deftest pack-board-creates-a-task-in-the-master-lane
   ;; Given a pack with specifier on master
   ;; When New Task records name htw-console-app
@@ -707,7 +710,7 @@
   (let [root (tmp-dir)
         text "coder pane snapshot\n"]
     (setup-pack! root ["specifier" "coder"])
-    (write-file (fs/path root ".swarmforge/sessions/coder/cave-walk/pane.txt") text)
+    (write-file (fs/path root ".swarmforge/sessions/coder/pane.txt") text)
     (let [result (pack-web root false "--test-pane" (str root) "coder")]
       (is (zero? (:exit result)))
       (is (str/includes? (:out result) "coder pane snapshot")))))
@@ -724,9 +727,10 @@
                  (start-tmux! root roles))]
     (try
       (handoffd-once root {"SWARMFORGE_PANE_STUB" "pane\n"})
-      (let [pane (pane-path root "coder" "htw-console-app")]
+      (let [pane (role-pane-path root "coder")]
         (is (fs/exists? pane))
-        (is (= "pane\n" (slurp (str pane)))))
+        (is (= "pane\n" (slurp (str pane))))
+        (is (not (fs/exists? (pane-path root "coder" "htw-console-app")))))
       (finally
         (stop-tmux! sock)))))
 
@@ -743,8 +747,9 @@
                       (script "pack_board.sh")
                       "archive-all" "--root" (str root))]
       (is (zero? (:exit result)))
-      (is (= "pane\n" (slurp (str (pane-path root "coder" "htw-console-app")))))
-      (is (not (fs/exists? (pane-path root "done" "already-done")))))))
+      (is (= "pane\n" (slurp (str (role-pane-path root "coder")))))
+      (is (not (fs/exists? (role-pane-path root "done"))))
+      (is (not (fs/exists? (pane-path root "coder" "htw-console-app")))))))
 
 (deftest close-swarm-archives-live-role-panes
   ;; Given a two-pack with a live card in coder
@@ -763,7 +768,7 @@
                       (str (fs/path repo-root "close-swarm"))
                       (str root))]
       (is (zero? (:exit result)))
-      (is (= "pane\n" (slurp (str (pane-path root "coder" "htw-console-app"))))))))
+      (is (= "pane\n" (slurp (str (role-pane-path root "coder"))))))))
 
 (defn wait-file [path timeout-ms]
   (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
@@ -992,6 +997,23 @@
     (is (str/includes? html "card-rejected"))
     (is (str/includes? html "/api/tasks/delete"))))
 
+(deftest pack-dashboard-splitter-drags-the-rail
+  ;; Given dashboard HTML
+  ;; Then the board/Work Queue border can be dragged
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "col-resize"))
+    (is (str/includes? html "pointerdown"))
+    (is (str/includes? html "setProperty(\"--rail\""))))
+
+(deftest pack-dashboard-rejected-card-has-edit-retry
+  ;; Given dashboard HTML
+  ;; Then a rejected card opens an edit pane with Delete and Retry
+  (let [html (dashboard-html (tmp-dir))]
+    (is (str/includes? html "openRejectEdit"))
+    (is (str/includes? html "/api/tasks/retry"))
+    (is (str/includes? html "rt-text"))
+    (is (str/includes? html "Retry"))))
+
 (deftest pack-dashboard-attention-has-clarification-row
   ;; Given dashboard HTML
   ;; Then Attention can show Request clarification with a text box
@@ -1164,6 +1186,48 @@
     (is (zero? (:exit result)))
     (is (nil? (task-lane root "HTW")))
     (is (not (fs/exists? (fs/path root ".swarmforge/board/HTW.txt"))))))
+
+(deftest pack-web-delete-rejected-purges-handoffs-into-rejected-tasks
+  ;; Given a rejected HTW card with a pending git_handoff
+  ;; When POST /api/tasks/delete
+  ;; Then the card, notify, and handoff are gone and rejected-tasks keeps the set
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
+        pending (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
+        _ (write-file pending
+                      "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\npayload\n")
+        result (pack-web root false "--test-delete-task" (str root) "HTW")]
+    (is (zero? (:exit result)))
+    (is (nil? (task-lane root "HTW")))
+    (is (not (fs/exists? pending)))
+    (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
+    (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks")))))
+
+(deftest pack-web-retry-rejected-queues-a-master-note
+  ;; Given a rejected HTW card with a pending git_handoff
+  ;; When POST /api/tasks/retry with edited text
+  ;; Then the card stays, is not REJECTED, pending is gone, and a master note is queued
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
+        pending (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
+        _ (write-file pending
+                      "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\nold\n")
+        result (pack-web root false "--test-retry-task" (str root) "HTW" "new payload")
+        card (first (:tasks (web-state root)))
+        notes (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))
+        note (slurp (str (first notes)))]
+    (is (zero? (:exit result)))
+    (is (= "specifier" (:lane card)))
+    (is (not= "REJECTED" (:status card)))
+    (is (not (fs/exists? pending)))
+    (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
+    (is (seq notes))
+    (is (str/includes? note "new payload"))
+    (is (str/includes? note "to: specifier"))))
 
 (deftest pack-web-post-task-duplicate-keeps-the-server
   ;; Given a card named HTW

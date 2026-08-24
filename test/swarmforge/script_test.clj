@@ -390,6 +390,27 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarm-tool-knows-constitution-tool-names
+  ;; Given a pack project
+  ;; When require runs for clj-mutate
+  ;; Then it is a known tool (missing until ensure), not Unknown tool
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "specifier\tmaster\t%s\tsession\tSpecifier\tcodex\ttask\n" root))
+      (let [missing (run {:dir root :ok? false}
+                         (script "swarm_tool.sh") "require" "clj-mutate")
+            help (run {:dir root :ok? false}
+                      (script "swarm_tool.sh") "--help")]
+        (is (not= 0 (:exit missing)))
+        (is (str/includes? (:err missing) "MISSING: clj-mutate"))
+        (is (not (str/includes? (:err missing) "Unknown tool")))
+        (is (str/includes? (str (:err help) (:out help)) "clj-mutate"))
+        (is (str/includes? (str (:err help) (:out help)) "crap4clj"))
+        (is (str/includes? (str (:err help) (:out help)) "dry4clj")))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest swarm-tool-require-and-ensure-install-aps-wrappers
   ;; Given a project without APS tools
   ;; When require runs, it reports missing
@@ -482,7 +503,10 @@
         (is (str/includes? prompt "Do not ask the operator what new feature"))
         (is (str/includes? prompt "Do not import behavior from sibling"))
         (is (str/includes? prompt "Finish the assigned"))
-        (is (str/includes? prompt "one git_handoff")))
+        (is (str/includes? prompt "one git_handoff"))
+        (is (str/includes? prompt "merge conflict"))
+        (is (str/includes? prompt "swarm_tool.sh require crap4clj"))
+        (is (str/includes? prompt "Do not clone")))
       (finally
         (fs/delete-tree root)))))
 

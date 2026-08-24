@@ -151,12 +151,10 @@
           (pack-board! "move" "--name" task "--lane" (first recipients)))))))
 
 (defn archive-sender! [headers]
-  (let [from (get headers "from")
-        task (get headers "task")]
-    (when (and (= "git_handoff" (get headers "type"))
-               (not (str/blank? from))
-               (not (str/blank? task)))
-      (pack-board! "archive" "--role" from "--name" task))))
+  (let [from (get headers "from")]
+    (when (and (not (str/blank? from))
+               (not (re-matches #"\(.+\)" from)))
+      (pack-board! "archive" "--role" from))))
 
 (defn master-role-name [roles]
   (some (fn [[role info]]

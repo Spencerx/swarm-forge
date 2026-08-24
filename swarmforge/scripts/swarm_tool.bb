@@ -11,7 +11,17 @@
    "ir-dry-checker" {:source "github.com/unclebob/Acceptance-Pipeline-Specification"
                      :bb-task "gherkin-ir-dry-checker"}
    "gherkin-mutator" {:source "github.com/unclebob/Acceptance-Pipeline-Specification"
-                     :bb-task "gherkin-mutator"}})
+                      :bb-task "gherkin-mutator"}
+   "crap4clj" {:source "github.com/unclebob/crap4clj" :bb-task "crap4clj"}
+   "dry4clj" {:source "github.com/unclebob/dry4clj" :bb-task "dry4clj"}
+   "clj-mutate" {:source "github.com/unclebob/clj-mutate" :bb-task "clj-mutate"}
+   "cloverage" {:source "github.com/unclebob/crap4clj" :bb-task "crap4clj"}
+   "crap4go" {:source "github.com/unclebob/crap4go" :bb-task "crap4go"}
+   "dry4go" {:source "github.com/unclebob/dry4go" :bb-task "dry4go"}
+   "mutate4go" {:source "github.com/unclebob/mutate4go" :bb-task "mutate4go"}
+   "crap4java" {:source "github.com/unclebob/crap4java" :bb-task "crap4java"}
+   "dry4java" {:source "github.com/unclebob/dry4java" :bb-task "dry4java"}
+   "mutate4java" {:source "github.com/unclebob/mutate4java" :bb-task "mutate4java"}})
 
 (def usage-text
   (str "Usage:\n"
