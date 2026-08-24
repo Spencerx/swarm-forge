@@ -17,7 +17,12 @@
    "dry4clj" {:source "github.com/unclebob/dry4clj" :bb-task "dry4clj"}
    "clj-mutate" {:source "github.com/unclebob/clj-mutate" :bb-task "clj-mutate"
                  :needs ["cloverage"]}
-   "cloverage" {:mvn "cloverage/cloverage" :main "cloverage.coverage"}
+   "cloverage" {:mvn "cloverage/cloverage" :main "cloverage.coverage"
+                :paths ["src" "test"]}
+   "speclj" {:mvn "speclj/speclj" :main "speclj.cli"
+             :paths ["src" "spec" "test"]}
+   "speclj-structure-check" {:source "github.com/unclebob/speclj-structure-check"
+                             :bb-task "check"}
    "crap4go" {:source "github.com/unclebob/crap4go" :bb-task "crap4go"}
    "dry4go" {:source "github.com/unclebob/dry4go" :bb-task "dry4go"}
    "mutate4go" {:source "github.com/unclebob/mutate4go" :bb-task "mutate4go"}
@@ -62,15 +67,18 @@
       (when (roles-at? (fs/cwd)) (fs/cwd))
       (exit! 1 "Cannot find SwarmForge project root")))
 
+(defn canonical-tool [tool]
+  (str/lower-case (or tool "")))
+
 (defn tool-spec [tool]
-  (or (get catalog tool)
+  (or (get catalog (canonical-tool tool))
       (exit! 1 (str "Unknown tool: " tool "\n\n" usage-text))))
 
 (defn bin-dir [root]
   (fs/path root ".swarmforge" "bin"))
 
 (defn wrapper-path [root tool]
-  (fs/path (bin-dir root) tool))
+  (fs/path (bin-dir root) (canonical-tool tool)))
 
 (defn source-dir [root source]
   (if-let [override (not-empty (System/getenv "SWARMFORGE_TOOL_SRC"))]
@@ -78,7 +86,7 @@
     (fs/path root ".swarmforge" "tools" (last (str/split source #"/")))))
 
 (defn needed-tools [tool]
-  (vec (or (:needs (get catalog tool)) [])))
+  (vec (or (:needs (tool-spec tool)) [])))
 
 (defn missing-tool [root tool]
   (first (remove #(fs/executable? (wrapper-path root %))
@@ -118,9 +126,11 @@
     (fs/set-posix-file-permissions target "rwxr-xr-x")
     target))
 
-(defn write-mvn-wrapper! [root tool mvn main]
-  (let [target (wrapper-path root tool)
-        deps (str "{:deps {" mvn " {:mvn/version \"RELEASE\"}}}")]
+(defn write-mvn-wrapper! [root tool mvn main paths]
+  (let [target (wrapper-path root (canonical-tool tool))
+        path-vec (or (seq paths) [])
+        deps (str "{:paths [" (str/join " " (map pr-str path-vec)) "]"
+                  " :deps {" mvn " {:mvn/version \"RELEASE\"}}}")]
     (fs/create-dirs (fs/parent target))
     (spit (str target)
           (str "#!/usr/bin/env bash\n"
@@ -131,11 +141,13 @@
 (defn install-one! [tool]
   (let [spec (tool-spec tool)
         root (project-root)
+        name (canonical-tool tool)
         target (if-let [bb-task (:bb-task spec)]
-                 (write-bb-wrapper! root tool bb-task
+                 (write-bb-wrapper! root name bb-task
                                     (ensure-source! root (:source spec)))
-                 (write-mvn-wrapper! root tool (:mvn spec) (:main spec)))]
-    (println "INSTALLED:" tool (str target))))
+                 (write-mvn-wrapper! root name (:mvn spec) (:main spec)
+                                     (:paths spec)))]
+    (println "INSTALLED:" name (str target))))
 
 (defn ensure-tool! [tool]
   (tool-spec tool)

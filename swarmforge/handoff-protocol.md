@@ -118,7 +118,7 @@ enqueued_at: 2026-06-15T14:05:32Z
 
 Re-read your role and constitution.
 
-merge_and_process coder a1b2c3d9
+merge_and_process.sh coder a1b2c3d9
 ```
 
 For broadcast handoffs, `to` preserves the full recipient list and `recipient`
@@ -147,7 +147,7 @@ Generated body:
 ```text
 Re-read your role and constitution.
 
-merge_and_process coder a1b2c3d9
+merge_and_process.sh coder a1b2c3d9
 ```
 
 The script validates the task name and canonicalizes the commit abbreviation
@@ -174,7 +174,7 @@ Examples:
 
 The terminal handoff is the last role's `git_handoff` whose `to:` is every
 other role in the pack. That set, not a count of names, marks the card Done.
-Each recipient merges that commit (`merge_and_process`) and stops; they do
+Each recipient merges that commit (`merge_and_process.sh`) and stops; they do
 not re-forward. A partial `to:` list is not terminal.
 
 Examples:
@@ -391,7 +391,7 @@ TASK_NAME: task-1-cave-setup
 PAYLOAD:
 Re-read your role and constitution.
 
-merge_and_process architect a1b2c3d9
+merge_and_process.sh architect a1b2c3d9
 ```
 
 ### `done_with_current_task.sh`

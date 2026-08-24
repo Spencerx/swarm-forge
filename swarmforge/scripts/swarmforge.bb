@@ -412,9 +412,9 @@
          "- Do not search the worktree for `.swarmforge/board/tasks.tsv`. That file is on the project (master).\n"
          "- Use TASK_NAME from `ready_for_next.sh` or the inbound `task:` header. The helper fills `task:` from the sender-lane card.\n"
          "- Do not invent a name or hunt `sessions.tsv`.\n"
-         "- Constitution tools: `swarm_tool.sh require crap4clj` (also dry4clj, clj-mutate, Cloverage, APS, or the language table). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies.\n"
+         "- Constitution tools: `swarm_tool.sh require crap4clj` (also dry4clj, clj-mutate, cloverage, speclj, speclj-structure-check, APS, or the language table). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies.\n"
          "- Do not clone those repos into `./tmp`.\n"
-         "- If merge_and_process or ready_for_next reports a merge conflict, resolve the conflicted files, git add, and commit. Do not invent git merge. Parallel cards on one tree will conflict; that is expected.\n"
+         "- If merge_and_process.sh or ready_for_next reports a merge conflict, resolve the conflicted files, git add, and commit. Do not invent git merge. Parallel cards on one tree will conflict; that is expected.\n"
          "- Operator follow-ups arrive as `[id] text` in this pane. Answer with `pack_dashboard_request.sh answer <id> ./tmp/answer.txt`.\n"
          "- Ask the operator with `pack_dashboard_request.sh clarify ./tmp/question.txt`. Do not ask in the pane.\n"
          "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n"
@@ -454,6 +454,18 @@
 (defn grok-permission-prefix [row]
   "--permission-mode bypassPermissions ")
 
+(defn alt-screen-env [agent row]
+  (if (and (= agent "claude")
+           (not (extra-has? row "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN")))
+    "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 "
+    ""))
+
+(defn no-alt-screen-flag [agent row]
+  (if (and (#{"codex" "copilot"} agent)
+           (not (extra-has? row "--no-alt-screen")))
+    "--no-alt-screen "
+    ""))
+
 (defn launch-command [ctx index row]
   (let [role (:role row)
         agent (:agent row)
@@ -471,9 +483,9 @@
     (write-agent-instruction-file! role prompt-file (last-pack-role? ctx role))
     (cond-> (str base
                 (case agent
-                  "claude" (str "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "codex" (str "codex -C " (sq (str role-worktree)) " " (yolo-flag agent row) (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "copilot" (str "copilot -C " (sq (str role-worktree)) " --name " (sq (str "SwarmForge " display)) " " (yolo-flag agent row) (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
+                  "claude" (str (alt-screen-env agent row) "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
+                  "codex" (str "codex -C " (sq (str role-worktree)) " " (no-alt-screen-flag agent row) (yolo-flag agent row) (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
+                  "copilot" (str "copilot -C " (sq (str role-worktree)) " " (no-alt-screen-flag agent row) "--name " (sq (str "SwarmForge " display)) " " (yolo-flag agent row) (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
                   "grok" (str "grok --cwd " (sq (str role-worktree)) " " (grok-permission-prefix row) (extra-args-prefix row) "--minimal --rules \"$(cat " (sq (str prompt-file)) ")\" --verbatim \"$(cat " (sq (str prompt-file)) ")\"")))
       (= index 0)
       (str "; exit_code=$?; SWARMFORGE_TERMINAL_BACKEND=" (sq (:terminal-backend ctx))

@@ -890,16 +890,16 @@
     (is (<= 0 (:before body)))
     (is (<= (:after body) 6))))
 
-(deftest pack-web-thermometer-ignores-codex-working-timer
+(deftest pack-web-thermometer-heats-on-codex-working-timer
   ;; Given a Codex specifier pane whose only change is the working timer
   ;; When --test-heat-codex samples both
-  ;; Then activity does not rise
+  ;; Then activity rises
   (let [root (tmp-dir)
         _ (setup-pack! root ["specifier"])
         result (pack-web root false "--test-heat-codex" (str root))
         body (json/parse-string (:out result) true)]
     (is (zero? (:exit result)))
-    (is (not (< (:before body) (:after body))))))
+    (is (< (:before body) (:after body)))))
 
 (deftest pack-dashboard-html-wires-teardown
   ;; When serving dashboard.html
@@ -1501,17 +1501,17 @@
     (is (zero? (:exit result)))
     (is (< (:before body) (:after body)))))
 
-(deftest pack-web-grok-thermometer-ignores-chrome-flicker
-  ;; Given a Grok pane whose only change is chrome at the bottom
+(deftest pack-web-grok-thermometer-heats-on-waiting-timer
+  ;; Given a Grok pane whose only change is Waiting for response Ns
   ;; When --test-heat-grok
-  ;; Then activity stays at the baseline
+  ;; Then activity rises
   (let [root (tmp-dir)
         _ (setup-pack! root ["specifier"])
         _ (set-backend! root "grok")
         result (pack-web root false "--test-heat-grok" (str root))
         body (json/parse-string (:out result) true)]
     (is (zero? (:exit result)))
-    (is (= (:before body) (:after body)))))
+    (is (< (:before body) (:after body)))))
 
 (deftest pack-web-thermometer-heats-on-collapsed-transcript-counts
   ;; Given Codex collapsed output whose +N line changes

@@ -354,61 +354,13 @@
 (defn backend-name [row]
   (str/lower-case (or (nth row 5 nil) "")))
 
-(defn live-prompt-line? [line]
-  (boolean (re-matches #"›\s*" (str/trim line))))
-
-(defn codex-working-line? [line]
-  (let [t (str/trim line)]
-    (or (str/blank? t)
-        (live-prompt-line? t)
-        (re-find #"(?i)esc to interrupt" t)
-        (re-find #"(?i)^working\b" t)
-        (re-find #"(?i)•\s*working\b" t)
-        (re-find #"(?i)worked for\s" t)
-        (re-find #"(?i)tab to queue" t)
-        (re-find #"(?i)context left" t)
-        (re-find #"·\s*\d+s\b" t))))
-
-(defn strip-trailing-chrome [text pred]
-  (let [lines (vec (str/split-lines (str/trimr (or text ""))))
-        cut (loop [i (dec (count lines))]
-              (cond
-                (neg? i) 0
-                (pred (nth lines i)) (recur (dec i))
-                :else (inc i)))]
-    (str/join "\n" (subvec lines 0 (max cut 0)))))
-
-(defn grok-chrome-line? [line]
-  (let [t (str/trim line)]
-    (or (str/blank? t)
-        (live-prompt-line? t)
-        (mail-banner? t)
-        (re-find #"(?i)always-approve" t)
-        (re-find #"(?i)shift\+tab" t)
-        (re-find #"(?i)waiting for response" t)
-        (re-find #"(?i)enter:send" t)
-        (re-find #"Esc:cancel" t))))
-
 (defn drop-mail-lines [text]
   (->> (str/split-lines (or text ""))
        (remove mail-banner?)
        (str/join "\n")))
 
-(defn pane-sample [text backend]
-  (let [backend (str/lower-case (or backend ""))
-        sampled (cond
-                  (#{"codex" "chatgpt"} backend)
-                  (strip-trailing-chrome text codex-working-line?)
-
-                  (#{"grok"} backend)
-                  (strip-trailing-chrome text grok-chrome-line?)
-
-                  :else
-                  (let [lines (vec (str/split-lines (str/trimr (or text ""))))]
-                    (if (<= (count lines) 1)
-                      ""
-                      (str/join "\n" (pop lines)))))]
-    (drop-mail-lines sampled)))
+(defn pane-sample [text _backend]
+  (drop-mail-lines text))
 
 (defn bag-diff [a b]
   (let [ks (set (concat (keys a) (keys b)))]

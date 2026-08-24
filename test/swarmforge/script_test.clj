@@ -340,6 +340,26 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest launch-command-puts-transcript-in-tmux-scrollback
+  ;; Given each pack backend
+  ;; When SwarmForge builds the launch command
+  ;; Then Codex and Copilot use --no-alt-screen, Claude disables the
+  ;; alternate screen, and Grok keeps --minimal
+  (doseq [[agent needle] [["codex" "--no-alt-screen"]
+                          ["copilot" "--no-alt-screen"]
+                          ["claude" "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1"]
+                          ["grok" "--minimal"]]]
+    (let [root (tmp-dir)]
+      (try
+        (let [command (:out (run {:dir root}
+                                 (script "swarmforge.bb")
+                                 "--test-launch-command"
+                                 (str root)
+                                 agent))]
+          (is (str/includes? command needle) agent))
+        (finally
+          (fs/delete-tree root))))))
+
 (deftest grok-launch-command-uses-bypass-permissions-with-always-approve
   (let [root (tmp-dir)]
     (try
@@ -408,7 +428,9 @@
         (is (str/includes? (str (:err help) (:out help)) "clj-mutate"))
         (is (str/includes? (str (:err help) (:out help)) "crap4clj"))
         (is (str/includes? (str (:err help) (:out help)) "dry4clj"))
-        (is (str/includes? (str (:err help) (:out help)) "cloverage")))
+        (is (str/includes? (str (:err help) (:out help)) "cloverage"))
+        (is (str/includes? (str (:err help) (:out help)) "speclj"))
+        (is (str/includes? (str (:err help) (:out help)) "speclj-structure-check")))
       (finally
         (fs/delete-tree root)))))
 
@@ -424,8 +446,10 @@
       (let [wrapper (slurp (str (fs/path root ".swarmforge/bin/cloverage")))]
         (is (str/includes? wrapper "cloverage.coverage"))
         (is (str/includes? wrapper "cloverage/cloverage"))
+        (is (str/includes? wrapper "\"src\" \"test\""))
         (is (not (str/includes? wrapper "crap4clj")))
-        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "cloverage")))))
+        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "cloverage"))))
+        (is (zero? (:exit (run {:dir root} (script "swarm_tool.sh") "require" "Cloverage")))))
       (finally
         (fs/delete-tree root)))))
 

@@ -262,7 +262,7 @@
           (is (str/includes? content "task: task-1-cave-setup\n"))
           (is (str/includes? content (str "commit: " commit "\n")))
           (is (str/includes? content "artifacts: README.md\n"))
-          (is (str/includes? content (str "merge_and_process sender " commit)))
+          (is (str/includes? content (str "merge_and_process.sh sender " commit)))
           (is (fs/exists? queued))
           (is (not (fs/exists? draft))))))))
 
@@ -634,7 +634,7 @@
           queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
           content (when (zero? (:exit result)) (read-file queued))]
       (is (zero? (:exit result)))
-      (is (str/includes? (str content) (str "merge_and_process sender " sha)))
+      (is (str/includes? (str content) (str "merge_and_process.sh sender " sha)))
       (is (not (str/includes? (str content) "Please merge this and run the tests."))))))
 
 (deftest swarm-handoff-keeps-draft-task-that-names-a-lane-card
