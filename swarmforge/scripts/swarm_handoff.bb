@@ -24,7 +24,8 @@
        "priority: NN\n"
        "message: <one line, max 80 chars>"))
 
-(def reserved-fields #{"id" "from" "role" "recipient" "created_at" "enqueued_at" "dequeued_at" "completed_at"})
+(def reserved-fields #{"id" "from" "role" "recipient" "created_at" "enqueued_at"
+                       "dequeued_at" "completed_at" "non-forwarding"})
 (def allowed-fields #{"type" "to" "priority" "task" "commit" "message"})
 (def allowed-types #{"git_handoff" "note"})
 
@@ -153,6 +154,30 @@
       (assoc headers "task" batch-task)
       (with-lane-task headers sender))))
 
+(defn pack-role-names []
+  (->> (str/split-lines (slurp (str (roles-file))))
+       (remove str/blank?)
+       (map #(first (str/split % #"\t")))
+       vec))
+
+(defn last-pack-role? [role]
+  (= role (last (pack-role-names))))
+
+(defn with-non-forwarding [headers sender]
+  (if (and (= "git_handoff" (get headers "type"))
+           (last-pack-role? sender))
+    (assoc headers "non-forwarding" "true")
+    headers))
+
+(defn inbound-handoffs []
+  (let [dir (in-process-dir)]
+    (into (handoff-files dir)
+          (mapcat handoff-files (batch-dirs dir)))))
+
+(defn inbound-non-forwarding? []
+  (boolean (some #(= "true" (header-field % "non-forwarding"))
+                 (inbound-handoffs))))
+
 (defn role-worktree [role]
   (some (fn [line]
           (let [cols (str/split line #"\t")]
@@ -230,6 +255,7 @@
   (-> headers
       fill-commit
       (with-board-task sender)
+      (with-non-forwarding sender)
       fill-priority))
 
 (defn ensure-field [ordered field]
@@ -430,6 +456,8 @@
                       (str "task: " (get headers "task"))
                       (str "commit: " canonical-commit)
                       (str "artifacts: " artifacts))
+                (= "true" (get headers "non-forwarding"))
+                (conj "non-forwarding: true")
                 (= "note" type)
                 (conj (str "message: " (get headers "message")))
                 true
@@ -476,6 +504,9 @@
                         (cond-> (= "git_handoff" (get headers "type"))
                           (ensure-field "commit")))
             sha (get headers "commit")]
+        (when (and (= "git_handoff" (get headers "type"))
+                   (inbound-non-forwarding?))
+          (exit! 1 "Current inbound handoff is non-forwarding; do not send a git_handoff."))
         (when (and (= "git_handoff" (get headers "type"))
                    (not (commit-on-sender-branch? sha)))
           (exit! 1 (str "Result commit " sha " is not reachable from sender worktree")))

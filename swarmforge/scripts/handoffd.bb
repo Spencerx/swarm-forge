@@ -171,6 +171,13 @@
           (seq rec)
           (= rec others)))))
 
+(defn non-forwarding? [headers]
+  (= "true" (get headers "non-forwarding")))
+
+(defn terminal-handoff? [roles headers]
+  (or (non-forwarding? headers)
+      (terminal-broadcast? roles headers)))
+
 (defn listed-handoffs [dir]
   (if (fs/directory? dir)
     (->> (fs/list-dir dir)
@@ -223,7 +230,7 @@
   (when (and (fs/exists? (board-file))
              (= "git_handoff" (get headers "type"))
              (seq (recipient-list headers)))
-    (if (terminal-broadcast? roles headers)
+    (if (terminal-handoff? roles headers)
       (doseq [name (terminal-task-names roles headers)]
         (pack-board! "done" "--name" name))
       (let [task (get headers "task")]

@@ -410,6 +410,54 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest swarmforge-trusts-codex-worktree-once
+  ;; Given a Codex worktree with no projects block
+  ;; When startup ensures trust
+  ;; Then config.toml gains trust_level trusted for that exact path, once
+  (let [root (tmp-dir)
+        home (fs/create-temp-dir {:prefix "codex-home."})
+        wt (str (fs/absolutize root))]
+    (try
+      (doseq [_ [1 2]]
+        (run {:dir root :env {"CODEX_HOME" (str home)
+                              "HOME" (str home)
+                              "PATH" (System/getenv "PATH")
+                              "GIT_CONFIG_NOSYSTEM" "1"}}
+             (script "swarmforge.bb")
+             "--test-ensure-codex-trust"
+             wt))
+      (let [cfg (slurp (str (fs/path home "config.toml")))
+            header (str "[projects." (pr-str wt) "]")
+            hits (count (re-seq (re-pattern (java.util.regex.Pattern/quote header)) cfg))]
+        (is (str/includes? cfg header))
+        (is (str/includes? cfg "trust_level = \"trusted\""))
+        (is (= 1 hits)))
+      (finally
+        (fs/delete-tree root)
+        (fs/delete-tree home)))))
+
+(deftest swarmforge-does-not-overwrite-existing-codex-project-block
+  ;; Given an existing projects block for the worktree
+  ;; When startup ensures trust
+  ;; Then that block is left unchanged
+  (let [root (tmp-dir)
+        home (fs/create-temp-dir {:prefix "codex-home."})
+        wt (str (fs/absolutize root))
+        header (str "[projects." (pr-str wt) "]")
+        original (str header "\ntrust_level = \"untrusted\"\nnote = \"keep\"\n")]
+    (try
+      (write-file (fs/path home "config.toml") original)
+      (run {:dir root :env {"CODEX_HOME" (str home)
+                            "PATH" (System/getenv "PATH")
+                            "GIT_CONFIG_NOSYSTEM" "1"}}
+           (script "swarmforge.bb")
+           "--test-ensure-codex-trust"
+           wt)
+      (is (= original (slurp (str (fs/path home "config.toml")))))
+      (finally
+        (fs/delete-tree root)
+        (fs/delete-tree home)))))
+
 (deftest swarm-tool-knows-constitution-tool-names
   ;; Given a pack project
   ;; When require runs for clj-mutate

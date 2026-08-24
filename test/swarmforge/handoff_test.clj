@@ -655,6 +655,65 @@
       (is (str/includes? (str content) (str "merge_and_process.sh sender " sha)))
       (is (not (str/includes? (str content) "Please merge this and run the tests."))))))
 
+(deftest swarm-handoff-last-role-tags-git-handoff-non-forwarding
+  ;; Given receiver is the last pack role
+  ;; When it queues a git_handoff
+  ;; Then the queued file has non-forwarding: true
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "last-role.handoff")]
+    (write-file draft "type: git_handoff\nto: sender\npriority: 00\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "non-forwarding: true\n")))))
+
+(deftest swarm-handoff-non-last-role-does-not-tag-non-forwarding
+  ;; Given sender is not the last pack role
+  ;; When it queues a git_handoff
+  ;; Then the queued file has no non-forwarding header
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "mid-role.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (not (str/includes? (str content) "non-forwarding:"))))))
+
+(deftest swarm-handoff-refuses-git-handoff-when-inbound-is-non-forwarding
+  ;; Given an in-process inbound git_handoff tagged non-forwarding
+  ;; When swarm_handoff queues another git_handoff
+  ;; Then it refuses
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        inbound (fs/path root ".swarmforge/handoffs/inbox/in_process/00_from_architect.handoff")
+        draft (fs/path root "tmp" "forward.handoff")]
+    (write-file inbound (str "from: architect\nto: sender\npriority: 00\ntype: git_handoff\n"
+                             "task: HTW\nnon-forwarding: true\n\nmerge\n"))
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "non-forwarding"))
+      (is (fs/exists? draft)))))
+
 (deftest swarm-handoff-keeps-draft-task-that-names-a-lane-card
   ;; Given Command syntax and Holy Hand Grenade cards in the sender lane
   ;; When swarm_handoff queues a git_handoff with task: Holy Hand Grenade

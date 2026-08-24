@@ -496,10 +496,31 @@
            (apply str (map #(str " " (sq (:session %))) (:roles ctx)))
            " >/dev/null 2>&1 &!; exit $exit_code"))))
 
+(defn codex-home []
+  (or (not-empty (System/getenv "CODEX_HOME"))
+      (str (fs/path (System/getProperty "user.home") ".codex"))))
+
+(defn project-table-header [dir]
+  (str "[projects." (pr-str (str (fs/absolutize dir))) "]"))
+
+(defn ensure-codex-trust! [dir]
+  (when-not (str/blank? (str dir))
+    (let [home (codex-home)
+          cfg (fs/path home "config.toml")
+          header (project-table-header dir)
+          text (if (fs/exists? cfg) (slurp (str cfg)) "")]
+      (when-not (str/includes? text header)
+        (fs/create-dirs home)
+        (spit (str cfg)
+              (str (if (or (str/blank? text) (str/ends-with? text "\n")) text (str text "\n"))
+                   "\n" header "\ntrust_level = \"trusted\"\n")
+              :append true)))))
+
 (defn launch-role! [ctx index row]
+  (when (= "codex" (:agent row))
+    (ensure-codex-trust! (:worktree-path row)))
   (let [session (:session row)
         display (:display-name row)
-        prompt-file (fs/path (:prompts-dir ctx) (str (:role row) ".md"))
         command (launch-command ctx index row)]
     (sh "tmux" "-S" (:tmux-socket ctx) "send-keys" "-t"
         (tmux-agent-target display (:tmux-pane-base-index ctx) session)
@@ -833,6 +854,9 @@
 (defn test-sleep-inhibitor-prefix! []
   (println (str/join " " (or (sleep-inhibitor-prefix) []))))
 
+(defn test-ensure-codex-trust! [dir]
+  (ensure-codex-trust! dir))
+
 (defn -main [& args]
   (case (first args)
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
@@ -846,6 +870,7 @@
     "--test-install-hooks" (test-install-hooks! (second args))
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
+    "--test-ensure-codex-trust" (test-ensure-codex-trust! (second args))
     "--test-tmux-base-indexes" (test-tmux-base-indexes! (second args))
     "--test-create-role-session" (test-create-role-session! (second args) (nth args 2))
     (run-main! (or (first args) (System/getProperty "user.dir")))))

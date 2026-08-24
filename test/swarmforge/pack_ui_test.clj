@@ -115,7 +115,7 @@
   (let [cols (str/split (or (task-row (:out (list-tasks root)) name) "") #"\t")]
     (nth cols 1 nil)))
 
-(defn queue-handoff! [root {:keys [from to task artifacts]}]
+(defn queue-handoff! [root {:keys [from to task artifacts non-forwarding]}]
   (write-file
    (fs/path root ".swarmforge/handoffs/outbox"
             (str "50_from_" from "_to_" (str/replace to #"," "_") ".handoff"))
@@ -125,6 +125,7 @@
         "type: git_handoff\n"
         "task: " task "\n"
         (when artifacts (str "artifacts: " artifacts "\n"))
+        (when non-forwarding "non-forwarding: true\n")
         "\n"
         "payload\n")))
 
@@ -479,6 +480,26 @@
     (try
       (handoffd-once root)
       (is (not= "done" (task-lane root "htw-console-app")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest four-pack-one-recipient-non-forwarding-is-done
+  ;; Given four-pack, card in architect
+  ;; When architect queues a non-forwarding git_handoff to specifier only
+  ;; Then the card is done, not moved to specifier
+  (let [root (tmp-dir)
+        roles ["specifier" "coder" "refactorer" "architect"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "HTW" "architect")
+                 (queue-handoff! root {:from "architect"
+                                       :to "specifier"
+                                       :task "HTW"
+                                       :non-forwarding true})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "HTW")))
+      (is (seq (inbox-names root roles "specifier")))
       (finally
         (stop-tmux! sock)))))
 
