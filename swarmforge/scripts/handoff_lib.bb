@@ -148,11 +148,33 @@
       (throw (ex-info (str "AMBIGUOUS_TASK_STATE: batch contains no tasks: " batch-dir) {:exit 2})))
     (println "BATCH:" (str batch-dir))
     (println "COUNT:" (count files))
+    (when-let [name (header-field (first files) "task")]
+      (println "TASK_NAME:" name))
     (println "PRIORITY:" (or (header-field (first files) "priority") "50"))
     (doseq [[index file] (map-indexed vector files)]
       (println)
       (println "BATCH_ITEM:" (inc index))
       (print-task file))))
+
+(defn archive-current-role! []
+  (let [script (str (fs/path (fs/parent *file*) "pack_board.sh"))
+        result (babashka.process/sh {:continue true}
+                                    script "archive" "--role" (role)
+                                    "--root" (str (project-root)))]
+    (when-not (zero? (:exit result))
+      (binding [*out* *err*]
+        (print (str (:err result) (:out result)))))))
+
+(defn announce-follow-up! []
+  (if (seq (handoff-files (fs/path (inbox-dir) "new")))
+    (println "MAIL_WAITING")
+    (println "NO_TASK")))
+
+(defn finish-done! []
+  (try
+    (archive-current-role!)
+    (catch Exception _))
+  (announce-follow-up!))
 
 (defn next-sequence []
   (let [dir (state-dir)
@@ -197,6 +219,7 @@
       "print-task" (print-task (second args))
       "print-batch" (print-batch (second args))
       "next-sequence" (println (next-sequence))
+      "finish-done" (finish-done!)
       (do
         (binding [*out* *err*]
           (println "Usage: handoff_lib.bb <command> [args...]"))

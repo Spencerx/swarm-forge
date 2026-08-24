@@ -410,7 +410,7 @@
          "- Do not invoke helpers as `./swarmforge/scripts/...`. They are already on PATH.\n"
          "- Board cards live in `.swarmforge/board/tasks.tsv`. Use that card name as `task:`.\n"
          "- Do not search the worktree for `.swarmforge/board/tasks.tsv`. That file is on the project (master).\n"
-         "- Use TASK_NAME from `ready_for_next.sh` or the inbound `task:` header. The helper fills `task:` from the sender-lane card.\n"
+         "- Use TASK_NAME from `ready_for_next.sh` or the inbound `task:` header. For a batch, that name is the top item. The helper fills `task:` from the in-process batch, else the sender-lane card.\n"
          "- Do not invent a name or hunt `sessions.tsv`.\n"
          "- Constitution tools: `swarm_tool.sh require crap4clj` (also dry4clj, clj-mutate, cloverage, speclj, speclj-structure-check, APS, or the language table). If missing, `swarm_tool.sh ensure <tool>`. Do not invent project `bb` proxies.\n"
          "- Do not clone those repos into `./tmp`.\n"

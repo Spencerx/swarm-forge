@@ -106,15 +106,52 @@
             (str/split-lines (slurp (str file))))
       [])))
 
+(defn in-process-dir []
+  (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs" "inbox" "in_process"))
+
+(defn handoff-files [dir]
+  (if (fs/exists? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/regular-file? %) (str/ends-with? (fs/file-name %) ".handoff")))
+         (sort-by #(fs/file-name %))
+         vec)
+    []))
+
+(defn batch-dirs [dir]
+  (if (fs/exists? dir)
+    (->> (fs/list-dir dir)
+         (filter #(and (fs/directory? %) (str/starts-with? (fs/file-name %) "batch_")))
+         (sort-by #(fs/file-name %))
+         vec)
+    []))
+
+(defn header-field [file field]
+  (let [prefix (str field ": ")]
+    (some (fn [line]
+            (when (str/starts-with? line prefix)
+              (subs line (count prefix))))
+          (take-while (complement str/blank?) (str/split-lines (slurp (str file)))))))
+
+(defn top-batch-task []
+  (let [batches (batch-dirs (in-process-dir))]
+    (when (= 1 (count batches))
+      (when-let [file (first (handoff-files (first batches)))]
+        (header-field file "task")))))
+
+(defn with-lane-task [headers sender]
+  (let [cards (board-cards-in-lane sender)
+        drafted (get headers "task")]
+    (cond
+      (some #{drafted} cards) headers
+      (= 1 (count cards)) (assoc headers "task" (first cards))
+      :else headers)))
+
 (defn with-board-task [headers sender]
   (if-not (= "git_handoff" (get headers "type"))
     headers
-    (let [cards (board-cards-in-lane sender)
-          drafted (get headers "task")]
-      (cond
-        (some #{drafted} cards) headers
-        (= 1 (count cards)) (assoc headers "task" (first cards))
-        :else headers))))
+    (if-let [batch-task (not-empty (top-batch-task))]
+      (assoc headers "task" batch-task)
+      (with-lane-task headers sender))))
 
 (defn role-worktree [role]
   (some (fn [line]

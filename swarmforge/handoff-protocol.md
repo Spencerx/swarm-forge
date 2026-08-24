@@ -404,7 +404,9 @@ Responsibilities:
 - Add or update `completed_at`.
 - Move the file to `inbox/completed/`.
 - Print the completed task path.
-- Call `ready_for_next_task.sh` after completion and pass through its output.
+- Archive the completing role's pane.
+- Print `MAIL_WAITING` if `inbox/new/` still has handoffs, otherwise `NO_TASK`.
+- Do not dequeue or merge the next item.
 - Refuse to run if there are zero or multiple in-process files, unless an
   explicit repair is made outside the helper.
 
@@ -427,8 +429,8 @@ Responsibilities:
 - Move those files into one `inbox/in_process/batch_<timestamp>_<suffix>/`
   directory.
 - Add or update `dequeued_at` on each selected file.
-- Print the accepted batch path, count, priority, and each task payload in
-  helper-delivered order.
+- Print the accepted batch path, count, the top item's `TASK_NAME`, priority,
+  and each task payload in helper-delivered order.
 - Print `NO_TASK` if no inbox item is available.
 - Refuse ambiguous states, such as multiple in-process batches, unless an
   explicit repair is made outside the helper.
@@ -443,22 +445,17 @@ Responsibilities:
 - Add or update `completed_at` on each file in the batch.
 - Move the batch directory to `inbox/completed/`.
 - Print the completed task paths and completed batch path.
-- Call `ready_for_next_batch.sh` after completion and pass through its output.
+- Archive the completing role's pane.
+- Print `MAIL_WAITING` if `inbox/new/` still has handoffs, otherwise `NO_TASK`.
+- Do not dequeue or merge the next item.
 - Refuse to run if there are zero or multiple in-process batches, unless an
   explicit repair is made outside the helper.
 
-Example success:
+Example success with more mail queued:
 
 ```text
 COMPLETED: .swarmforge/handoffs/inbox/completed/00_20260615T140531Z_000042_from_architect_to_coder.handoff
-TASK: .swarmforge/handoffs/inbox/in_process/50_20260615T140600Z_000043_from_cleaner_to_coder.handoff
-FROM: cleaner
-TYPE: note
-PRIORITY: 50
-PAYLOAD:
-Re-read your role and constitution.
-
-Waiting on QA result before merging cleanup branch.
+MAIL_WAITING
 ```
 
 Example success with no queued follow-up:
@@ -484,17 +481,16 @@ Prompts should instruct agents to follow this loop:
 8. When the task or batch is fully complete, run `done_with_current.sh`.
 9. Treat `note` handoffs as tasks too; after reading or acting on a note, run
    `done_with_current.sh` before accepting any other handoff.
-10. If a done helper prints `TASK: <path>`, treat the printed `PAYLOAD` as the
-   next task.
-11. If a done helper prints `BATCH: <path>`, treat each printed `BATCH_ITEM` as
-   part of the next batch in helper-delivered order.
-12. If a done helper prints `NO_TASK`, stop waiting for work.
+10. If a done helper prints `MAIL_WAITING`, run `ready_for_next.sh` as a new
+    turn to accept the next item.
+11. If a done helper prints `NO_TASK`, stop waiting for work.
 
 On restart, an agent should run `ready_for_next.sh` and follow its output.
 
 Tmux wake-ups are intentionally lossy. They only prompt an idle agent to check
-its durable inbox. A busy agent can ignore them because task completion also
-checks the queue and accepts the next task in priority order.
+its durable inbox. A busy agent can ignore them. After `done_with_current.sh`
+prints `MAIL_WAITING`, the agent runs `ready_for_next.sh` to accept the next
+item.
 
 ## Audit Trail
 

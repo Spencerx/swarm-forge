@@ -335,10 +335,19 @@
       (is (str/includes? out "TASK_NAME: task-a"))
       (is (str/includes? out "TASK_NAME: task-b"))
       (is (not (str/includes? out "TASK_NAME: task-c")))
+      (let [lines (str/split-lines out)
+            batch-i (first (keep-indexed (fn [i line] (when (str/starts-with? line "BATCH:") i)) lines))
+            name-i (first (keep-indexed (fn [i line] (when (str/starts-with? line "TASK_NAME:") i)) lines))
+            item-i (first (keep-indexed (fn [i line] (when (str/starts-with? line "BATCH_ITEM:") i)) lines))]
+        (is (< batch-i name-i item-i))
+        (is (= "TASK_NAME: task-a" (nth lines name-i))))
       (is (= 2 (count (fs/glob batch-dir "*.handoff"))))
       (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/20_20260615T000003Z_000003_from_sender_to_receiver.handoff"))))))
 
-(deftest done-with-current-task-completes-and-accepts-next-task
+(deftest done-with-current-task-completes-without-accepting-next
+  ;; Given a current task and more mail in the inbox
+  ;; When done_with_current runs
+  ;; Then it completes the current task, leaves the next item queued, and prints MAIL_WAITING
   (let [root (tmp-dir)]
     (init-repo! root)
     (setup-project! root {"receiver" "task"})
@@ -353,13 +362,18 @@
     (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}
                       (script "done_with_current.sh"))
           completed (fs/path root ".swarmforge/handoffs/inbox/completed/50_20260615T000001Z_000001_from_sender_to_receiver.handoff")
-          next-file (fs/path root ".swarmforge/handoffs/inbox/in_process/50_20260615T000002Z_000002_from_sender_to_receiver.handoff")]
+          next-file (fs/path root ".swarmforge/handoffs/inbox/new/50_20260615T000002Z_000002_from_sender_to_receiver.handoff")]
       (is (str/includes? (:out result) "COMPLETED:"))
-      (is (str/includes? (:out result) "TASK_NAME: task-next"))
+      (is (str/includes? (:out result) "MAIL_WAITING"))
+      (is (not (str/includes? (:out result) "TASK_NAME: task-next")))
       (is (some? (header completed "completed_at")))
-      (is (some? (header next-file "dequeued_at"))))))
+      (is (fs/exists? next-file))
+      (is (nil? (header next-file "dequeued_at"))))))
 
-(deftest done-with-current-batch-completes-and-accepts-next-batch
+(deftest done-with-current-batch-completes-without-accepting-next
+  ;; Given a current batch and more mail in the inbox
+  ;; When done_with_current runs
+  ;; Then it completes the batch, leaves the next item queued, and prints MAIL_WAITING
   (let [root (tmp-dir)
         batch (fs/path root ".swarmforge/handoffs/inbox/in_process/batch_20260615T000001Z_000001")]
     (init-repo! root)
@@ -381,12 +395,15 @@
                            :task "task-c"})
     (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}
                       (script "done_with_current.sh"))
-          completed-batch (fs/path root ".swarmforge/handoffs/inbox/completed/batch_20260615T000001Z_000001")]
+          completed-batch (fs/path root ".swarmforge/handoffs/inbox/completed/batch_20260615T000001Z_000001")
+          next-file (fs/path root ".swarmforge/handoffs/inbox/new/20_20260615T000003Z_000003_from_sender_to_receiver.handoff")]
       (is (str/includes? (:out result) "COMPLETED_BATCH:"))
-      (is (str/includes? (:out result) "TASK_NAME: task-c"))
+      (is (str/includes? (:out result) "MAIL_WAITING"))
+      (is (not (str/includes? (:out result) "TASK_NAME: task-c")))
       (is (= 2 (count (fs/glob completed-batch "*.handoff"))))
       (is (every? #(some? (header % "completed_at"))
-                  (fs/glob completed-batch "*.handoff"))))))
+                  (fs/glob completed-batch "*.handoff")))
+      (is (fs/exists? next-file)))))
 
 (deftest stop-handoff-daemon-stops-running-process-and-removes-pid-file
   (let [root (tmp-dir)]
@@ -482,7 +499,8 @@
       (is (zero? (:exit ready)))
       (is (str/includes? (:out ready) "TASK_NAME: task-inferred"))
       (is (zero? (:exit done)))
-      (is (str/includes? (:out done) "COMPLETED:")))))
+      (is (str/includes? (:out done) "COMPLETED:"))
+      (is (str/includes? (:out done) "NO_TASK")))))
 
 (deftest merge-and-process-merges-the-inbound-commit
   ;; Given a receiver worktree behind a sender commit
@@ -710,6 +728,62 @@
       (is (zero? (:exit result)))
       (is (str/includes? (str content) "artifacts:"))
       (is (str/includes? (str content) "side.md")))))
+
+(deftest done-with-current-archives-the-completing-role-pane
+  ;; Given a current task and a pane stub
+  ;; When done_with_current runs
+  ;; Then the completing role's session pane is archived
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (put-handoff! root "in_process" "50_20260615T000001Z_000001_from_sender_to_receiver.handoff"
+                  {:id "20260615T000001Z_000001_from_sender"
+                   :from "sender" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "git_handoff" :task "task-current"
+                   :commit (head-sha root)})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"
+                                       "SWARMFORGE_PANE_STUB" "receiver pane\n"}}
+                      (script "done_with_current.sh"))
+          pane (fs/path root ".swarmforge/sessions/receiver/pane.txt")]
+      (is (zero? (:exit result)))
+      (is (fs/exists? pane))
+      (is (= "receiver pane\n" (read-file pane))))))
+
+(deftest swarm-handoff-uses-top-in-process-batch-task-name
+  ;; Given an in-process batch whose first item is Command syntax, and HTW still in the sender lane
+  ;; When swarm_handoff queues a git_handoff drafted as HTW
+  ;; Then the queued file uses Command syntax
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root {"sender" "batch" "receiver" "task"})
+        batch (fs/path root ".swarmforge/handoffs/inbox/in_process/batch_20260824T182225Z_000001")
+        _ (fs/create-dirs batch)
+        _ (write-file (fs/path batch "50_20260824T181141Z_000002_from_coder_to_sender.handoff")
+                      (handoff {:id "20260824T181141Z_000002_from_coder"
+                                :from "coder" :to "sender" :recipient "sender"
+                                :priority "50" :type "git_handoff" :task "Command syntax"
+                                :commit (head-sha root)}))
+        _ (write-file (fs/path batch "50_20260824T181302Z_000003_from_coder_to_sender.handoff")
+                      (handoff {:id "20260824T181302Z_000003_from_coder"
+                                :from "coder" :to "sender" :recipient "sender"
+                                :priority "50" :type "git_handoff" :task "validate"
+                                :commit (head-sha root)}))
+        _ (write-file (fs/path root ".swarmforge" "board" "tasks.tsv")
+                      (str "HTW\tsender\t2026-08-24T18:05:33Z\t2026-08-24T18:05:33Z\n"
+                           "Command syntax\tsender\t2026-08-24T18:06:05Z\t2026-08-24T18:06:05Z\n"
+                           "validate\tsender\t2026-08-24T18:06:45Z\t2026-08-24T18:06:45Z\n"))
+        _ (write-file (fs/path root "slice.md") "work\n")
+        _ (run {:dir root} "git" "add" "slice.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
+        draft (fs/path root "tmp" "htw.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 00\ntask: HTW\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (when (zero? (:exit result)) (read-file queued))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str content) "task: Command syntax\n"))
+      (is (not (str/includes? (str content) "task: HTW\n"))))))
 
 (deftest helpers-refuse-wrong-current-work-shape
   (let [root (tmp-dir)

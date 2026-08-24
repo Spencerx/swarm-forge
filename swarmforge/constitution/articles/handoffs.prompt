@@ -68,9 +68,7 @@ message: <one line, max 80 chars>
 - When the task or batch is fully complete, run `done_with_current.sh`.
 - `note` handoffs are tasks too; after reading or acting on a note, run
   `done_with_current.sh` before accepting any other handoff.
-- If `done_with_current.sh` prints `TASK: <path>`, treat the printed `PAYLOAD`
-  as the next task.
-- If `done_with_current.sh` prints `BATCH: <path>`, treat each printed
-  `BATCH_ITEM` as part of the next batch in helper-delivered order.
+- If `done_with_current.sh` prints `MAIL_WAITING`, run `ready_for_next.sh` as a
+  new turn. Do not treat done output as the next merge.
 - If a done helper prints `NO_TASK`, stop waiting for work.
 - On restart, run `ready_for_next.sh` and follow its output.
