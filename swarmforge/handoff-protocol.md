@@ -163,29 +163,28 @@ and other non-functional churn still require a forward down the chain.
 
 Examples:
 
-- `two-pack`: `coder` -> `cleaner` -> `coder`; `cleaner` always forwards to
-  `coder`.
-- `four-pack`: `specifier` -> `coder` -> `refactorer` -> `architect` ->
-  `specifier`; each intermediate role always forwards to the next role in the
-  chain.
+- `two-pack`: `coder` -> `cleaner`; `cleaner` always forwards to `coder`.
+- `four-pack`: `specifier` -> `coder` -> `refactorer` -> `architect`; each
+  intermediate role always forwards to the next role in the chain.
 - `six-pack`: `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender`
   -> `QA`; each intermediate role always forwards to the next role in the
   chain.
 
 #### Terminal broadcast
 
-Only the end-of-chain handoff sent to multiple recipients is not forwarded
-further. Each recipient merges that commit (`merge_and_process`) and stops;
-recipients do not re-forward that handoff down the chain.
+The terminal handoff is the last role's `git_handoff` whose `to:` is every
+other role in the pack. That set, not a count of names, marks the card Done.
+Each recipient merges that commit (`merge_and_process`) and stops; they do
+not re-forward. A partial `to:` list is not terminal.
 
 Examples:
 
-- `two-pack`: when `cleaner` sends the return handoff to `coder`, `coder`
-  merges only.
-- `four-pack`: when `architect` sends the return handoff to `specifier`,
-  `specifier` merges only.
-- `six-pack`: when `QA` sends the completion handoff to the other roles, each
-  recipient merges only.
+- `two-pack`: `cleaner` `to: coder` (every other role). `coder` merges only
+  and the card goes to Done.
+- `four-pack`: `architect` `to: specifier,coder,refactorer`. Each recipient
+  merges only and the card goes to Done.
+- `six-pack`: `QA` `to:` the other five roles. Each recipient merges only
+  and the card goes to Done.
 
 ### `note`
 

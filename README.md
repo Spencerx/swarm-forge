@@ -25,7 +25,7 @@ The runnable SwarmForge configurations live on dedicated branches. Each branch c
 - `coder` implements requested behavior with TDD and unit tests.
 - `cleaner` batches coder handoffs and performs cleanup, CRAP and DRY review, architectural review, encapsulation and separation-of-concerns fixes, and language mutation hardening.
 
-The normal flow is `coder` -> `cleaner` -> `coder`. Use this branch when you want a tight implementation/refinement loop without specification, QA, property-test, or acceptance-test roles.
+The normal flow is `coder` -> `cleaner`, then a completion broadcast to every other role (card to Done). Use this branch when you want a tight implementation/refinement loop without specification, QA, property-test, or acceptance-test roles.
 
 ### `four-pack`
 
@@ -36,7 +36,7 @@ The normal flow is `coder` -> `cleaner` -> `coder`. Use this branch when you wan
 - `refactorer` performs behavior-preserving cleanup, coverage improvement, CRAP and DRY review, mutation-site scans, and property-test support.
 - `architect` owns high-level structure, dependency direction, mutation hardening, DRY review, soft Gherkin mutation, and final completion notification.
 
-The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect` -> `specifier`. Use this branch when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
+The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect`, then a completion broadcast to every other role (card to Done). Use this branch when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
 
 ### `six-pack`
 
@@ -49,7 +49,7 @@ The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect` -> `spe
 - `hardender` performs mutation hardening, language mutation, CRAP and DRY verification, and soft Gherkin mutation.
 - `QA` converts the specifier's QA procedures into executable scripts, runs final user-interface verification, checks handoff consistency, and sends completion notifications.
 
-The normal flow is `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA` -> completion. Use this branch when you want each review and verification concern owned by a separate agent.
+The normal flow is `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA`, then a completion broadcast to every other role (card to Done). Use this branch when you want each review and verification concern owned by a separate agent.
 
 ### `simple-windows`
 
@@ -127,7 +127,7 @@ Layout, top to bottom then left to right:
 
 **Answer a clarification.** If an agent needs a human answer, Attention shows **Request clarification**, the question, and a text box. Submit injects the answer into that agent's pane. Do not use Approve/Reject for this.
 
-**Watch the board.** Cards move when `handoffd` delivers a `git_handoff`. Click a card to open its task body in a resizable window. The card can show the agent's latest status sentence (the last pane line that contains `I'm`). A multi-recipient end-of-chain handoff (six-pack QA) moves the card to **Done**.
+**Watch the board.** Cards move when `handoffd` delivers a `git_handoff`. Click a card to open its task body in a resizable window. The card can show the agent's latest status sentence (the last pane line that contains `I'm`). The last role in every pack sends the **terminal** handoff: `to:` every other role. That, not merely several names, moves the card to **Done**. The Done well is always on the board; it fills when that handoff is delivered.
 
 **Inspect an agent.** Click a Work Queue role name, or **Open** in the header / chat rail, to pop a live pane capture. Those windows are growable. Agents themselves stay in tmux; these views do not replace the dashboard.
 

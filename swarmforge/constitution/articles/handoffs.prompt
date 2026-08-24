@@ -25,15 +25,10 @@ priority: NN
 task: <short-stable-task-name>
 ```
 
-- When your role is an intermediate step in the pack pipeline, always forward
-  a `git_handoff` to the next role in the chain after completing the inbound
-  task, regardless of what changed. Formatting-only, manifest-only, audit-only,
-  generated metadata, and other non-functional churn still require a forward
-  down the chain.
-- When your role sends the end-of-chain handoff to multiple recipients, those
-  recipients merge only. They do not forward that handoff further. Only this
-  terminal broadcast is merge-only without re-forwarding. Do not invent
-  `git merge`; `ready_for_next.sh` runs `merge_and_process.sh`.
+- After completing the inbound task, always send a `git_handoff` to the next
+  role in the chain, regardless of what changed. Formatting-only, manifest-only,
+  audit-only, generated metadata, and other non-functional churn still require
+  a forward down the chain.
 - Preserve the received task name when forwarding work for the same task.
 - The master agent uses the existing New Task / board card name as `task:`. Do not invent a name.
 - For `note`, write:

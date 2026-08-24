@@ -270,17 +270,16 @@
       (finally
         (stop-tmux! sock)))))
 
-(deftest handoffd-marks-the-task-card-done-for-multi-recipient-handoff
-  ;; Given card htw-console-app in QA
-  ;; When a git_handoff QA→specifier,coder,cleaner,architect,hardender is delivered
+(deftest handoffd-marks-the-task-card-done-for-terminal-handoff
+  ;; Given six-pack, card in QA (not master)
+  ;; When QA queues git_handoff to every other role
   ;; Then the card lane is done
   (let [root (tmp-dir)
-        roles ["QA" "specifier" "coder" "cleaner" "architect" "hardender"]
         to "specifier,coder,cleaner,architect,hardender"
-        sock (do (setup-pack! root roles)
+        sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "QA")
                  (queue-handoff! root {:from "QA" :to to :task "htw-console-app"})
-                 (start-tmux! root roles))]
+                 (start-tmux! root six-pack-roles))]
     (try
       (handoffd-once root)
       (is (= "done" (task-lane root "htw-console-app")))
@@ -422,6 +421,83 @@
       (is (= [] (pending-names root)))
       (is (= "cleaner" (task-lane root "htw-console-app")))
       (is (= [] (:approvals (web-state root))))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest two-pack-end-broadcast-marks-the-card-done
+  ;; Given two-pack, card in cleaner
+  ;; When cleaner queues git_handoff to coder (every other role)
+  ;; Then the card is done and coder inbox has the file
+  (let [root (tmp-dir)
+        roles ["coder" "cleaner"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "htw-console-app" "cleaner")
+                 (queue-handoff! root {:from "cleaner" :to "coder" :task "htw-console-app"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "htw-console-app")))
+      (is (seq (inbox-names root roles "coder")))
+      (is (= [] (pending-names root)))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest four-pack-end-broadcast-marks-the-card-done
+  ;; Given four-pack, card in architect
+  ;; When architect queues git_handoff to every other role
+  ;; Then the card is done
+  (let [root (tmp-dir)
+        roles ["specifier" "coder" "refactorer" "architect"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "htw-console-app" "architect")
+                 (queue-handoff! root {:from "architect"
+                                       :to "specifier,coder,refactorer"
+                                       :task "htw-console-app"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "htw-console-app")))
+      (is (seq (inbox-names root roles "specifier")))
+      (is (seq (inbox-names root roles "coder")))
+      (is (seq (inbox-names root roles "refactorer")))
+      (is (= [] (pending-names root)))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest four-pack-partial-to-is-not-done
+  ;; Given four-pack, card in architect
+  ;; When architect queues git_handoff to specifier,coder (not every other role)
+  ;; Then the card is not done
+  (let [root (tmp-dir)
+        roles ["specifier" "coder" "refactorer" "architect"]
+        sock (do (setup-pack! root roles)
+                 (create-task root "htw-console-app" "architect")
+                 (queue-handoff! root {:from "architect"
+                                       :to "specifier,coder"
+                                       :task "htw-console-app"})
+                 (start-tmux! root roles))]
+    (try
+      (handoffd-once root)
+      (is (not= "done" (task-lane root "htw-console-app")))
+      (finally
+        (stop-tmux! sock)))))
+
+(deftest six-pack-qa-broadcast-marks-the-card-done
+  ;; Given six-pack, card in QA
+  ;; When QA queues git_handoff to every other role
+  ;; Then the card is done
+  (let [root (tmp-dir)
+        others "specifier,coder,cleaner,architect,hardender"
+        sock (do (setup-pack! root six-pack-roles)
+                 (create-task root "htw-console-app" "QA")
+                 (queue-handoff! root {:from "QA" :to others :task "htw-console-app"})
+                 (start-tmux! root six-pack-roles))]
+    (try
+      (handoffd-once root)
+      (is (= "done" (task-lane root "htw-console-app")))
+      (is (seq (inbox-names root six-pack-roles "specifier")))
+      (is (seq (inbox-names root six-pack-roles "hardender")))
+      (is (= [] (pending-names root)))
       (finally
         (stop-tmux! sock)))))
 

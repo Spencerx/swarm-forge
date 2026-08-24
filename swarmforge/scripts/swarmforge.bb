@@ -397,7 +397,7 @@
        (when (some #{"ir-dry-checker"} tools)
          "- Dry-check with the two-arg form: `ir-dry-checker <ir> ./tmp/<stem>.dry.json`\n")))
 
-(defn tool-startup-section [role]
+(defn tool-startup-section [role last-role?]
   (let [tools (get role-required-tools role [])]
     (str "## Tool Startup\n\n"
          "- Do not search `$HOME` or run `find` for APS tools.\n"
@@ -418,6 +418,8 @@
          "- Operator follow-ups arrive as `[id] text` in this pane. Answer with `pack_dashboard_request.sh answer <id> ./tmp/answer.txt`.\n"
          "- Ask the operator with `pack_dashboard_request.sh clarify ./tmp/question.txt`. Do not ask in the pane.\n"
          "- Do not ask for approval in the pane. Queue `git_handoff`; the operator uses Attention.\n"
+         (when last-role?
+           (str "- You are the last role in this pack. After this pack step, one git_handoff to every other role. Recipients merge only. The card goes to Done. Do not also send a git_handoff to a single next role.\n"))
          (when (= role "specifier")
            (str "- Specify from the board card and the current product tree. Do not import behavior from sibling projects.\n"
                 "- Do not ask the operator what new feature to specify or what the card already states.\n"
@@ -425,12 +427,15 @@
          (when (= role "QA")
            (str "- One commit is one git_handoff. Do not send two git_handoffs of the same SHA.\n")))))
 
-(defn write-agent-instruction-file! [role prompt-file]
+(defn last-pack-role? [ctx role]
+  (= role (:role (last (:roles ctx)))))
+
+(defn write-agent-instruction-file! [role prompt-file last-role?]
   (spit (str prompt-file)
         (str "Read swarmforge/constitution.prompt, then read every file it refers to recursively, and obey all of those instructions.\n"
              "Read swarmforge/roles/" role ".prompt, then read every file it refers to recursively, and follow all of those instructions.\n"
              "\n"
-             (tool-startup-section role))))
+             (tool-startup-section role last-role?))))
 
 (defn extra-args-prefix [row]
   (let [args (:extra-args row)]
@@ -463,7 +468,7 @@
                   " && export PATH=" (sq (str tool-bin)) ":" (sq (str role-script-dir)) ":$PATH"
                   " && cd " (sq (str role-worktree))
                   " && ")]
-    (write-agent-instruction-file! role prompt-file)
+    (write-agent-instruction-file! role prompt-file (last-pack-role? ctx role))
     (cond-> (str base
                 (case agent
                   "claude" (str "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
@@ -807,13 +812,6 @@
     (fs/create-dirs (:prompts-dir ctx))
     (println (launch-command ctx 1 row))))
 
-(defn test-instruction-file! [root role]
-  (let [ctx (assoc (context root) :terminal-backend "none")
-        prompt-file (fs/path (:prompts-dir ctx) (str role ".md"))]
-    (fs/create-dirs (:prompts-dir ctx))
-    (write-agent-instruction-file! role prompt-file)
-    (print (slurp (str prompt-file)))))
-
 (defn test-install-hooks! [root]
   (let [ctx (context root)]
     (install-commit-msg-hook! ctx)
@@ -832,7 +830,6 @@
     "--test-launch-command" (apply test-launch-command!
                                      (or (second args) (System/getProperty "user.dir"))
                                      (drop 2 args))
-    "--test-instruction-file" (test-instruction-file! (second args) (nth args 2))
     "--test-install-hooks" (test-install-hooks! (second args))
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)

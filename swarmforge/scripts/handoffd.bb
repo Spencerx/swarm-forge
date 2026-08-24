@@ -139,17 +139,6 @@
       (log! "pack-board-failed" args (:err result) (:out result))
       (throw (ex-info (str/trim (str (:err result) "\n" (:out result))) result)))))
 
-(defn update-board! [headers]
-  (when (fs/exists? (board-file))
-    (let [task (get headers "task")
-          recipients (recipient-list headers)]
-      (when (and (= "git_handoff" (get headers "type"))
-                 (not (str/blank? task))
-                 recipients)
-        (if (next recipients)
-          (pack-board! "done" "--name" task)
-          (pack-board! "move" "--name" task "--lane" (first recipients)))))))
-
 (defn archive-sender! [headers]
   (let [from (get headers "from")]
     (when (and (not (str/blank? from))
@@ -167,6 +156,31 @@
 
 (defn from-master? [roles headers]
   (= (get headers "from") (master-role-name roles)))
+
+(defn other-roles [roles from]
+  (->> (keys roles)
+       (remove #(= % from))
+       set))
+
+(defn terminal-broadcast? [roles headers]
+  (let [from (get headers "from")
+        rec (set (recipient-list headers))
+        others (other-roles roles from)]
+    (boolean
+     (and (not (from-master? roles headers))
+          (seq rec)
+          (= rec others)))))
+
+(defn update-board! [roles headers]
+  (when (fs/exists? (board-file))
+    (let [task (get headers "task")
+          recipients (recipient-list headers)]
+      (when (and (= "git_handoff" (get headers "type"))
+                 (not (str/blank? task))
+                 recipients)
+        (if (terminal-broadcast? roles headers)
+          (pack-board! "done" "--name" task)
+          (pack-board! "move" "--name" task "--lane" (first recipients)))))))
 
 (defn single-recipient? [headers]
   (let [recipients (recipient-list headers)]
@@ -206,7 +220,7 @@
     (if-not recipients
       (fail! path "missing to header")
       (do
-        (update-board! headers)
+        (update-board! roles headers)
         (doseq [recipient recipients]
           (let [role-info (get roles recipient)]
             (when-not role-info
