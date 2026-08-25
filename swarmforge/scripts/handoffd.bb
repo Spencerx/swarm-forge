@@ -200,6 +200,9 @@
     (into (listed-handoffs dir)
           (mapcat listed-handoffs (listed-batches dir)))))
 
+(defn role-has-inbox-state? [role-info state]
+  (boolean (seq (inbox-handoffs role-info state))))
+
 (defn task-key [headers]
   (or (not-empty (get headers "task_id"))
       (get headers "task")))
@@ -293,6 +296,41 @@
     (fs/path (get-in roles [sender-role :worktree-path])
              ".swarmforge" "handoffs" "sent")))
 
+(declare outbox-files)
+
+(defn approved-git-handoff? [headers]
+  (and (= "git_handoff" (get headers "type"))
+       (not (str/blank? (get headers "approved")))))
+
+(defn outbound-git-from-role? [role file]
+  (let [headers (:headers (parse-message file))]
+    (and (= "git_handoff" (get headers "type"))
+         (= role (get headers "from")))))
+
+(defn active-outbound-git-files [roles sender-role]
+  (if (str/blank? sender-role)
+    []
+    (let [pending (listed-handoffs (pending-dir))
+          outbox (->> (concat (mapcat #(or (outbox-files %) []) (vals roles))
+                              (or (outbox-files {:worktree-path project-root}) []))
+                      distinct)]
+      (->> (concat pending outbox)
+           (filter #(outbound-git-from-role? sender-role %))
+           vec))))
+
+(defn sender-ready-work? [roles sender-role]
+  (when-let [role-info (get roles sender-role)]
+    (and (role-has-inbox-state? role-info "new")
+         (not (role-has-inbox-state? role-info "in_process"))
+         (empty? (active-outbound-git-files roles sender-role)))))
+
+(defn maybe-notify-unblocked-sender! [roles socket headers sender-role]
+  (when (and (approved-git-handoff? headers)
+             (sender-ready-work? roles sender-role)
+             (not (contains? (set (recipient-list headers)) sender-role)))
+    (notify! socket (get-in roles [sender-role :session]))
+    (log! "notified-unblocked-sender" sender-role)))
+
 (defn deliver! [roles socket sender-role path]
   (let [filename (fs/file-name path)
         message (parse-message path)
@@ -314,6 +352,7 @@
               (notify! socket (:session role-info)))))
         (move-with-collision path (sent-dir roles sender-role))
         (archive-sender! headers)
+        (maybe-notify-unblocked-sender! roles socket headers sender-role)
         (log! "delivered" (str path))))))
 
 (defn outbox-files [role-info]

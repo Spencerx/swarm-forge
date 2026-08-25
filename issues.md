@@ -1,67 +1,58 @@
-# Next task starts from an unapproved rejected commit
+# Approval unblock does not wake sender role
 
-Observed in `/Users/unclebob/junk/four-squad`: the current approval can say
-`task: extras` while the Documents list contains `features/console/wumpus_jump.feature`,
-which belongs to the rejected/retried `jump` task.
+Observed twice in `/Users/unclebob/junk/four-squad`: a queued task remained in
+`specifier`'s inbox after the previous specifier-to-coder handoff was approved
+and delivered.
 
 Failure chain:
 
-- The specifier completed `jump` and queued a `jump` git handoff for approval.
-- Before that approval was accepted or rejected, the specifier marked the
-  in-process `jump` handoff complete and ran `ready_for_next.sh`.
-- `ready_for_next.sh` dequeued `extras` and stamped it with the current active
-  `HEAD` as `task_base_commit`.
-- At that moment, active `HEAD` still included the unapproved `jump` commit, so
-  `extras` got a task base of the pending/rejectable `jump` commit.
-- The `jump` approval was then rejected and the rejected commit was preserved on
-  a rejected branch.
-- When `extras` later tried to hand off its work, ancestry validation required
-  it to descend from its recorded task base, which was the rejected `jump`
-  commit.
-- The agent merged the rejected `jump` base back into the `extras` line to pass
-  ancestry validation.
-- The resulting `extras` handoff commit was a merge commit whose first-parent
-  diff showed `features/console/wumpus_jump.feature`, so the approval said
-  `extras` while the document list showed the `jump` file.
-
-Root cause: a role can dequeue/start the next task while its previous git
-handoff is still pending approval. This lets a later task capture unapproved
-work as its base. If that earlier work is rejected, the later task is already
-contaminated.
-
-Fix:
-
-- Treat a role with an active pending approval or unprocessed outbox git handoff
-  as not idle.
-- `ready_for_next.sh` and `ready_for_next_batch.sh` must refuse to dequeue a new
-  task for a role while that role has active outbound git work awaiting
-  approval or waiting in the outbox for the handoff daemon.
-- The refusal should be explicit, for example:
+- The specifier completed `htw` and queued a git handoff to coder.
+- Before that handoff was approved, the specifier tried to receive the next
+  task.
+- `ready_for_next.sh` correctly refused to dequeue `jump` because the specifier
+  still had an active pending approval:
 
   ```text
   WAITING_FOR_APPROVAL: current git handoff is still active
   ```
 
-- A role may resume its existing in-process task, but it must not move to a
-  different queued task until the previous outbound git handoff is approved,
-  rejected, or still waiting to be processed by the daemon.
-- Once a git handoff is approved and delivered to the next role's inbox, the
-  sender may start the next queued task. The receiver's in-process work must not
-  keep blocking the sender.
-- Rejection must continue to remove/rollback the rejected commit and clear
-  runtime state for that task id.
-- Artifact generation for git handoffs should use the task's accepted base
-  range, not blindly `commit^..commit` for merge commits. For a task handoff,
-  artifacts should be computed from `task_base_commit..commit` and should reject
-  or ignore paths introduced only by unrelated/rejected merged history.
+- The htw handoff was later approved and delivered to coder.
+- That approval cleared the condition that had blocked the specifier, but the
+  specifier was not notified or rescheduled.
+- `jump` stayed in `.swarmforge/handoffs/inbox/new` until someone manually
+  prompted the specifier to run `ready_for_next.sh` again.
+- The same pattern repeated after `jump` was approved: `jump` moved to `coder`,
+  but the later `extras` task remained queued for `specifier` instead of
+  starting.
+- By contrast, reject/retry and reject/delete paths do wake or otherwise
+  stimulate specifier: rejection injects `Rejected: <task>` into the master pane,
+  and retry queues a fresh New Task note that `handoffd` delivers normally.
+
+Root cause: approval delivery changes the sender role's eligibility, but the
+handoff/approval workflow only notifies the receiver. A role that previously hit
+`WAITING_FOR_APPROVAL` can remain idle even though queued work is now available.
+The rejection paths have their own wake-ups; the missing path is approval.
+
+Fix:
+
+- When a pending approval is approved and delivered, identify the sender role
+  from the approved git handoff.
+- After delivery, check whether that sender has queued inbound work that is now
+  eligible for `ready_for_next.sh`.
+- If so, notify that sender role to run `ready_for_next.sh`.
+- The notification should be sent only after the pending approval has been
+  removed or moved out of `pending_approval`, so the sender does not immediately
+  hit the same `WAITING_FOR_APPROVAL` state again.
+- Keep rejection handling as-is unless a separate rejection-specific failure is
+  observed; reject/retry and reject/delete already appear to stimulate the
+  specifier correctly.
 
 Expected behavior:
 
-- If `jump` is waiting for approval, the specifier cannot start `extras`.
-- Once `htw` is approved and delivered to coder, specifier can start `jump`
-  even if coder is still working `htw`.
-- If `jump` is rejected, the active branch rolls back before any later task
-  records a task base.
-- If `extras` is eventually started, its `task_base_commit` is the accepted
-  project state, not the rejected `jump` commit.
-- An `extras` approval cannot list `jump` documents.
+- If `htw` blocks specifier from starting `jump` while htw waits for approval,
+  approving htw wakes specifier.
+- `jump` starts as soon as the htw approval is delivered to coder.
+- If `jump` blocks specifier from starting `extras` while jump waits for
+  approval, approving jump wakes specifier.
+- `extras` starts as soon as the jump approval is delivered to coder.
+- Coder's in-process htw work does not block specifier from starting `jump`.

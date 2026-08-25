@@ -432,6 +432,52 @@
       (is (fs/exists? in-process))
       (is (not (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/50_next.handoff")))))))
 
+(deftest handoffd-wakes-sender-after-approved-handoff-unblocks-queued-work
+  ;; Given an approved sender handoff is ready to deliver and sender has queued mail
+  ;; When handoffd delivers the approved handoff to the receiver
+  ;; Then the receiver and the now-unblocked sender are notified
+  (let [root (tmp-dir)
+        bin (fs/path root "bin")
+        fake-tmux (fs/path bin "tmux")
+        tmux-log (fs/path root "tmux.log")
+        receiver (fs/path root ".worktrees/receiver")]
+    (init-repo! root)
+    (setup-project! root)
+    (fs/create-dirs bin)
+    (write-file fake-tmux
+                (str "#!/usr/bin/env sh\n"
+                     "printf '%s\\n' \"$*\" >> \"$TMUX_LOG\"\n"
+                     "exit 0\n"))
+    (run {:dir root} "chmod" "+x" (str fake-tmux))
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "sender\tmaster\t%s\tsender-session\tSender\tcodex\ttask\nreceiver\treceiver\t%s\treceiver-session\tReceiver\tcodex\ttask\n"
+                        root receiver))
+    (write-file (fs/path root ".swarmforge/tmux-socket") "/tmp/fake.sock\n")
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_approved.handoff")
+                "from: sender\nto: receiver\npriority: 50\ntype: git_handoff\ntask_id: task-one\ntask: task-one\ncommit: 1234567890\napproved: true\n\npayload\n")
+    (put-handoff! root "new" "50_next.handoff"
+                  {:id "next"
+                   :from "(New Task)"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id "task-two"
+                   :task "task-two"
+                   :body "next task"})
+    (let [result (run {:dir root
+                       :env {"PATH" (str bin ":" (System/getenv "PATH"))
+                             "TMUX_LOG" (str tmux-log)}}
+                      "bb" (script "handoffd.bb") "--once" (str root))
+          log-text (read-file tmux-log)]
+      (is (zero? (:exit result)))
+      (is (fs/exists? (fs/path receiver ".swarmforge/handoffs/inbox/new/50_approved.handoff")))
+      (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/50_next.handoff")))
+      (is (str/includes? log-text "-t receiver-session"))
+      (is (str/includes? log-text "-t sender-session"))
+      (is (str/includes? (read-file (fs/path root ".swarmforge/daemon/handoffd.log"))
+                         "notified-unblocked-sender sender")))))
+
 (deftest ready-for-next-batch-waits-while-outbound-approval-is-active
   ;; Given a batch-mode sender has an outbound git_handoff pending approval
   ;; When sender asks for the next batch
