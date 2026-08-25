@@ -438,9 +438,10 @@
 (defn cards-in-lane [all-tasks lane]
   (filterv #(= lane (:lane %)) all-tasks))
 
-(defn queue-row [role names busy? alive? activity updated]
+(defn queue-row [role names batch-names busy? alive? activity updated]
   {:task (or (first names) "")
    :tasks (vec names)
+   :batch_tasks (vec batch-names)
    :role role
    :state (role-queue-state alive? busy?)
    :updated_at (or updated "")
@@ -458,6 +459,14 @@
         from-cards (mapv :name cards)]
     (vec (if (seq from-files) from-files from-cards))))
 
+(defn in-process-batch-task-names [row]
+  (let [worktree (nth row 2 nil)
+        dir (when-not (str/blank? worktree) (in-process-dir worktree))
+        batches (when dir (batch-dirs dir))]
+    (if (= 1 (count batches))
+      (in-process-task-names (handoff-files (first batches)))
+      [])))
+
 (defn work-row-for-role [root socket row all-tasks]
   (let [role (first row)
         files (in-process-for-row row)
@@ -468,8 +477,9 @@
         busy? (boolean (or path card))
         alive? (session-alive? socket (session-name row))
         text (live-pane-text root role)
-        names (work-task-names files cards)]
-    (queue-row role names busy? alive?
+        names (work-task-names files cards)
+        batch-names (in-process-batch-task-names row)]
+    (queue-row role names batch-names busy? alive?
                (role-heat role (or alive? (some? *pane-text*)) text (backend-name row))
                (or (:updated_at from-file) (:updated_at card) ""))))
 

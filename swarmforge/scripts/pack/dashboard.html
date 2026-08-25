@@ -336,16 +336,18 @@ function workRow(item) {
   tr.dataset.workRole = item.role || "";
   const task = document.createElement("td");
   const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+  const batchNames = item.batch_tasks && item.batch_tasks.length ? item.batch_tasks : [];
   task.dataset.tasks = names.join("\n");
+  task.dataset.batchTasks = batchNames.join("\n");
   task.append(names[0] || "");
-  if (names.length > 1) {
+  if (batchNames.length > 1) {
     const more = document.createElement("span");
     more.className = "menu batch-more";
     const mark = document.createElement("span");
     mark.textContent = "+";
     const list = document.createElement("div");
     list.className = "menu-list";
-    names.forEach((name) => {
+    batchNames.forEach((name) => {
       const row = document.createElement("div");
       row.className = "batch-item";
       row.textContent = name;
@@ -409,8 +411,10 @@ function renderWork(data) {
       return;
     }
     const names = item.tasks && item.tasks.length ? item.tasks : (item.task ? [item.task] : []);
+    const batchNames = item.batch_tasks && item.batch_tasks.length ? item.batch_tasks : [];
     const key = names.join("\n");
-    if (tr.children[0].dataset.tasks !== key) {
+    const batchKey = batchNames.join("\n");
+    if (tr.children[0].dataset.tasks !== key || tr.children[0].dataset.batchTasks !== batchKey) {
       tr.replaceWith(workRow(item));
       return;
     }

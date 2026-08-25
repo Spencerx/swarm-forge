@@ -1401,7 +1401,7 @@
 (deftest pack-web-waiting-cards-say-waiting-in-queue
   ;; Given two specifier cards and a pane I'm sentence
   ;; When --test-status-pane
-  ;; Then both cards say waiting in queue because no in-process handoff selects one
+  ;; Then both cards say waiting in queue and the work row is not marked as a batch
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
@@ -1409,10 +1409,14 @@
         result (pack-web-env root {} "--test-status-pane" (str root)
                              "I'm specifying HTW.\nesc to interrupt · 1s\n")
         state (json/parse-string (:out result) true)
-        by-name (into {} (map (juxt :name identity) (:tasks state)))]
+        by-name (into {} (map (juxt :name identity) (:tasks state)))
+        specifier-row (some #(when (= "specifier" (:role %)) %)
+                            (:work_in_flight state))]
     (is (zero? (:exit result)))
     (is (= "waiting in queue" (:status (get by-name "HTW"))))
-    (is (= "waiting in queue" (:status (get by-name "Holy Hand Grenade"))))))
+    (is (= "waiting in queue" (:status (get by-name "Holy Hand Grenade"))))
+    (is (= ["HTW" "Holy Hand Grenade"] (:tasks specifier-row)))
+    (is (= [] (:batch_tasks specifier-row)))))
 
 (deftest pack-web-in-process-card-gets-pane-status
   ;; Given two coder cards and in-process mail for Holy Hand Grenade
@@ -1682,6 +1686,25 @@
       (is (= "HTW" (:task row)))
       (is (= ["HTW" "Command Syntax"] (:tasks row))))))
 
+(deftest pack-web-work-queue-marks-only-real-batches
+  ;; Given a real in-process batch on architect
+  ;; When --test-state
+  ;; Then the batch task names are exposed for the dashboard + indicator
+  (let [root (tmp-dir)
+        roles ["specifier" "architect"]]
+    (setup-pack! root roles)
+    (put-in-process! root roles "architect"
+                     {:from "cleaner" :task "HTW"
+                      :filename "batch_20260615T000001Z_000001/10_from_cleaner_htw.handoff"})
+    (put-in-process! root roles "architect"
+                     {:from "cleaner" :task "Command Syntax"
+                      :filename "batch_20260615T000001Z_000001/11_from_cleaner_cs.handoff"})
+    (let [row (some #(when (= "architect" (:role %)) %)
+                    (:work_in_flight (web-state root)))]
+      (is (= "HTW" (:task row)))
+      (is (= ["HTW" "Command Syntax"] (:tasks row)))
+      (is (= ["HTW" "Command Syntax"] (:batch_tasks row))))))
+
 (deftest pack-dashboard-batch-plus-lists-tasks-on-hover
   ;; Given a work row with more than one task
   ;; When the operator hovers the +
@@ -1689,6 +1712,7 @@
   (let [html (dashboard-html (tmp-dir))
         src (dashboard-js-fn html "workRow")]
     (is (str/includes? src "item.tasks"))
+    (is (str/includes? src "item.batch_tasks"))
     (is (str/includes? src "batch-more"))
     (is (str/includes? src "mouseenter"))
     (is (str/includes? html "batch-more"))))
