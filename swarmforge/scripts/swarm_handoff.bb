@@ -2,8 +2,12 @@
 
 (ns swarm-handoff
   (:require [babashka.fs :as fs]
+            [clojure.edn :as edn]
             [clojure.java.shell :refer [sh]]
-            [clojure.string :as str]))
+            [clojure.string :as str])
+  (:import [java.nio.channels FileChannel]
+           [java.nio.file OpenOption StandardOpenOption]
+           [java.security MessageDigest]))
 
 (def usage-text
   (str "Usage:\n"
@@ -303,6 +307,118 @@
 (defn id-timestamp []
   (.format (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'")
            (.atZone (java.time.Instant/now) java.time.ZoneOffset/UTC)))
+
+(defn sha256 [text]
+  (let [digest (.digest (MessageDigest/getInstance "SHA-256")
+                        (.getBytes (str text) "UTF-8"))]
+    (apply str (map #(format "%02x" (bit-and (int %) 0xff)) digest))))
+
+(defn audit-pending-dir []
+  (fs/path (state-dir) "audit_pending"))
+
+(defn sender-audit-dir [sender]
+  (fs/path (audit-pending-dir) (sha256 sender)))
+
+(defn audit-task-id [headers]
+  (or (not-empty (get headers "task_id"))
+      (get headers "task")))
+
+(defn audit-file [sender task-id]
+  (fs/path (sender-audit-dir sender)
+           (str (sha256 task-id) ".edn")))
+
+(defn sender-audit-files [sender]
+  (let [dir (sender-audit-dir sender)]
+    (if (fs/directory? dir)
+      (->> (fs/glob dir "*.edn")
+           (filter fs/regular-file?)
+           vec)
+      [])))
+
+(defn read-audit [path]
+  (when (fs/regular-file? path)
+    (try
+      (edn/read-string (slurp (str path)))
+      (catch Exception _ nil))))
+
+(defn write-audit! [path candidate]
+  (fs/create-dirs (fs/parent path))
+  (let [tmp (fs/create-temp-file {:dir (fs/parent path) :prefix ".audit."})]
+    (spit (str tmp) (str (pr-str {:candidate candidate :created-at (timestamp)}) "\n"))
+    (fs/move tmp path {:replace-existing true})))
+
+(defn with-audit-lock [f]
+  (let [dir (audit-pending-dir)
+        path (fs/path dir ".lock")
+        options (into-array OpenOption [StandardOpenOption/CREATE
+                                        StandardOpenOption/WRITE])]
+    (fs/create-dirs dir)
+    (with-open [channel (FileChannel/open path options)]
+      (.lock channel)
+      (f))))
+
+(defn delete-sender-audits! [sender]
+  (doseq [path (sender-audit-files sender)]
+    (fs/delete-if-exists path)))
+
+(defn invocation-fingerprint [draft sender headers]
+  {:sender sender
+   :task-id (audit-task-id headers)
+   :type (get headers "type")
+   :recipients (vec (str/split (or (get headers "to") "") #"," -1))
+   :priority (get headers "priority")
+   :task (get headers "task")
+   :commit (get headers "commit")
+   :task-base-commit (or (current-task-base) "")
+   :non-forwarding (= "true" (get headers "non-forwarding"))
+   :draft-fingerprint (sha256 (slurp (str draft)))})
+
+(defn invalidate-changed-invocation-audits! [sender invocation]
+  (with-audit-lock
+    (fn []
+      (doseq [path (sender-audit-files sender)
+              :let [candidate (:candidate (read-audit path))]
+              :when (not= invocation (select-keys candidate (keys invocation)))]
+        (fs/delete-if-exists path)))))
+
+(defn audit-candidate [draft sender headers recipients canonical-commit artifacts]
+  {:version 1
+   :sender sender
+   :task-id (audit-task-id headers)
+   :type (get headers "type")
+   :recipients (vec recipients)
+   :priority (get headers "priority")
+   :task (get headers "task")
+   :commit canonical-commit
+   :artifacts (vec artifacts)
+   :task-base-commit (or (current-task-base) "")
+   :non-forwarding (= "true" (get headers "non-forwarding"))
+   :draft-fingerprint (sha256 (slurp (str draft)))})
+
+(defn print-audit-required! [candidate]
+  (println "AUDIT_REQUIRED")
+  (println "HANDOFF_NOT_QUEUED")
+  (println "TASK_ID:" (:task-id candidate))
+  (println "COMMIT:" (:commit candidate))
+  (println)
+  (println "Audit the completed task against its payload and your role responsibilities.")
+  (println "Review the full diff, tests, artifacts, and unrelated changes.")
+  (println "Fix and commit any findings, then run the same handoff command again."))
+
+(defn submit-after-audit! [candidate submit!]
+  (with-audit-lock
+    (fn []
+      (let [path (audit-file (:sender candidate) (:task-id candidate))
+            previous (:candidate (read-audit path))]
+        (if (= candidate previous)
+          (let [result (submit!)]
+            (delete-sender-audits! (:sender candidate))
+            result)
+          (do
+            (delete-sender-audits! (:sender candidate))
+            (write-audit! path candidate)
+            (print-audit-required! candidate)
+            nil))))))
 
 (defn valid-priority? [priority]
   (boolean (and priority (re-matches #"[0-9][0-9]" priority))))
@@ -694,6 +810,8 @@
                         (cond-> (= "git_handoff" (get headers "type"))
                           (ensure-field "commit")))
             sha (get headers "commit")]
+        (invalidate-changed-invocation-audits!
+         sender (invocation-fingerprint draft sender headers))
         (when (and (= "git_handoff" (get headers "type"))
                    (inbound-non-forwarding?))
           (exit! 1 "Current inbound handoff is non-forwarding; do not send a git_handoff."))
@@ -717,13 +835,22 @@
                         (commit-artifacts sha))]
             (when (and (= "git_handoff" (get headers "type")) (empty? files))
               (exit! 1 (str "Result commit " sha " has no changed files")))
-            (let [outbox-file (write-handoff! {:headers headers
-                                               :recipients (:recipients validation)
-                                               :canonical-commit (:canonical-commit validation)
-                                               :artifacts (when files (str/join "," files))
-                                               :sender sender})]
-              (fs/delete draft)
-              (println "HANDOFF QUEUED:" (str outbox-file))
-              (complete-current-after-git-handoff! headers))))))))
+            (let [submit! #(write-handoff! {:headers headers
+                                            :recipients (:recipients validation)
+                                            :canonical-commit (:canonical-commit validation)
+                                            :artifacts (when files (str/join "," files))
+                                            :sender sender})
+                  outbox-file (if (= "git_handoff" (get headers "type"))
+                                (submit-after-audit!
+                                 (audit-candidate draft sender headers
+                                                  (:recipients validation)
+                                                  (:canonical-commit validation)
+                                                  files)
+                                 submit!)
+                                (submit!))]
+              (when outbox-file
+                (fs/delete draft)
+                (println "HANDOFF QUEUED:" (str outbox-file))
+                (complete-current-after-git-handoff! headers)))))))))
 
 (apply -main *command-line-args*)

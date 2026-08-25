@@ -245,6 +245,15 @@ Responsibilities:
 - Canonicalize valid commit abbreviations.
 - Generate `role` from the current sender role for `git_handoff`.
 - Preserve `task` from the draft for `git_handoff`.
+- On the first valid `git_handoff` call, record the exact candidate under
+  `.swarmforge/handoffs/audit_pending/`, print `AUDIT_REQUIRED`, and leave the
+  draft and current inbox item in place.
+- Queue a `git_handoff` only when the sender repeats the unchanged candidate.
+  Any changed invocation invalidates that sender's previous challenge. Keep
+  challenges isolated between senders and remove task challenges on rejection,
+  retry, or deletion.
+- Complete the sender's current inbox item only after the audited handoff has
+  been queued. Approval, when required, occurs after this audit gate.
 - Generate the canonical body.
 - Atomically install the completed file into `outbox/`.
 
@@ -560,7 +569,8 @@ Delivery should be transaction-like:
 
 The current daemon-backed protocol uses these helper scripts:
 
-- `swarm_handoff.sh` validates and queues outbound handoff drafts.
+- `swarm_handoff.sh` validates outbound handoff drafts, enforces the two-call
+  audit gate for Git handoffs, and queues notes or audited Git handoffs.
 - `ready_for_next.sh` dispatches to the correct ready helper for the current
   role's configured receive mode.
 - `done_with_current.sh` dispatches to the correct done helper for the current

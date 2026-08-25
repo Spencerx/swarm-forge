@@ -112,6 +112,14 @@
                    (when (str/starts-with? line "HANDOFF QUEUED: ")
                      (subs line (count "HANDOFF QUEUED: ")))))))
 
+(defn audit-and-submit-git-handoff [opts draft]
+  (let [first-call (run (assoc opts :ok? false)
+                        (script "swarm_handoff.sh") (str draft))]
+    (if (and (zero? (:exit first-call))
+             (str/includes? (:out first-call) "AUDIT_REQUIRED"))
+      (run opts (script "swarm_handoff.sh") (str draft))
+      first-call)))
+
 (defn make-queued-handoff!
   ([root filename attrs]
    (let [sha (or (:commit attrs) (head-sha root))]
@@ -163,8 +171,8 @@
         draft (fs/path wt "tmp" "from-wt.handoff")]
     (is (not= wt-head master-head))
     (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: task-from-worktree\ncommit: %s\n" wt-head))
-    (let [result (run {:dir wt :env {"SWARMFORGE_ROLE" "sender"}}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir wt :env {"SWARMFORGE_ROLE" "sender"}} draft)
           queued (queued-path (:out result))
           content (read-file queued)
           outbox (str (fs/canonicalize (fs/path root ".swarmforge" "handoffs" "outbox")))]
@@ -194,8 +202,7 @@
     (testing "infers role from worktree when env is missing"
       (let [draft (fs/path wt "tmp" "no-env.handoff")]
         (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: inferred-role\ncommit: %s\n" wt-head))
-        (let [result (run {:dir wt :ok? false}
-                          (script "swarm_handoff.sh") (str draft))
+        (let [result (audit-and-submit-git-handoff {:dir wt :ok? false} draft)
               queued (queued-path (:out result))
               content (when (zero? (:exit result)) (read-file queued))]
           (is (zero? (:exit result)))
@@ -204,8 +211,8 @@
     (testing "fills worktree HEAD even when the draft names master's SHA"
       (let [draft (fs/path wt "tmp" "wrong-sha.handoff")]
         (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: ignore-typed-sha\ncommit: %s\n" master-head))
-        (let [result (run {:dir wt :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                          (script "swarm_handoff.sh") (str draft))
+        (let [result (audit-and-submit-git-handoff
+                      {:dir wt :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
               queued (queued-path (:out result))
               content (when (zero? (:exit result)) (read-file queued))]
           (is (zero? (:exit result)))
@@ -214,8 +221,8 @@
     (testing "fills HEAD when the draft omits commit"
       (let [draft (fs/path wt "tmp" "no-commit.handoff")]
         (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: omit-commit\n")
-        (let [result (run {:dir wt :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                          (script "swarm_handoff.sh") (str draft))
+        (let [result (audit-and-submit-git-handoff
+                      {:dir wt :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
               queued (queued-path (:out result))
               content (when (zero? (:exit result)) (read-file queued))]
           (is (zero? (:exit result)))
@@ -263,8 +270,8 @@
     (testing "valid git_handoff writes task, canonical commit, and generated payload"
       (let [draft (fs/path root "tmp" "valid.handoff")]
         (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: task-1-cave-setup\ncommit: %s\n" commit))
-        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
-                          (script "swarm_handoff.sh") (str draft))
+        (let [result (audit-and-submit-git-handoff
+                      {:dir root :env {"SWARMFORGE_ROLE" "sender"}} draft)
               queued (queued-path (:out result))
               content (read-file queued)]
           (is (str/includes? content "task: task-1-cave-setup\n"))
@@ -571,8 +578,8 @@
 
 (deftest swarm-handoff-auto-completes-current-after-git-handoff
   ;; Given a sender has current work and another item waiting
-  ;; When swarm_handoff queues a git_handoff for the current work
-  ;; Then it completes current work, leaves queued work alone, and reports waiting mail
+  ;; When swarm_handoff requests an audit and is then resubmitted unchanged
+  ;; Then the first call retains current work and the second queues and completes it
   (let [root (tmp-dir)
         base (init-repo! root)
         current-file "50_20260615T000001Z_000001_from_planner_to_sender.handoff"
@@ -601,6 +608,16 @@
     (run {:dir root} "git" "add" "jump.md")
     (run {:dir root} "git" "commit" "-q" "-m" "Jump")
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: jump\n")
+    (let [first-call (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+                          (script "swarm_handoff.sh") (str draft))
+          audit-files (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn")]
+      (is (zero? (:exit first-call)))
+      (is (str/includes? (:out first-call) "AUDIT_REQUIRED"))
+      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")))
+      (is (= 1 (count audit-files)))
+      (is (fs/exists? (handoff-path root "in_process" current-file)))
+      (is (not (fs/exists? completed)))
+      (is (fs/exists? draft)))
     (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
                       (script "swarm_handoff.sh") (str draft))
           queued (queued-path (:out result))
@@ -610,9 +627,126 @@
       (is (str/includes? (:out result) "COMPLETED:"))
       (is (str/includes? (:out result) "MAIL_WAITING"))
       (is (str/includes? content "task_id: jump-id\n"))
+      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn")))
       (is (some? (header completed "completed_at")))
       (is (fs/exists? queued-next))
       (is (nil? (header queued-next "dequeued_at"))))))
+
+(deftest swarm-handoff-requires-a-new-audit-after-the-commit-changes
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        draft (fs/path root "tmp" "changed-commit.handoff")
+        opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: changed-commit\n")
+    (let [first-call (run opts (script "swarm_handoff.sh") (str draft))]
+      (is (str/includes? (:out first-call) "AUDIT_REQUIRED")))
+    (write-file (fs/path root "changed.md") "changed\n")
+    (run {:dir root} "git" "add" "changed.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Change after audit")
+    (let [changed-call (run opts (script "swarm_handoff.sh") (str draft))]
+      (is (str/includes? (:out changed-call) "AUDIT_REQUIRED"))
+      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff"))))
+    (let [submitted (run opts (script "swarm_handoff.sh") (str draft))
+          queued (queued-path (:out submitted))]
+      (is (some? queued))
+      (is (str/includes? (read-file queued) (str "commit: " (head-sha root) "\n"))))))
+
+(deftest swarm-handoff-invalidates-an-audit-before-rejecting-a-changed-commit
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        draft (fs/path root "tmp" "invalid-commit-change.handoff")
+        opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: invalid-commit-change\n")
+    (is (str/includes? (:out (run opts (script "swarm_handoff.sh") (str draft)))
+                       "AUDIT_REQUIRED"))
+    (run {:dir root} "git" "commit" "-q" "--allow-empty" "-m" "Empty change")
+    (let [invalid-change (run (assoc opts :ok? false)
+                              (script "swarm_handoff.sh") (str draft))]
+      (is (= 1 (:exit invalid-change)))
+      (is (str/includes? (:err invalid-change) "has no changed files")))
+    (run {:dir root} "git" "reset" "--hard" "HEAD^")
+    (let [after-restore (run opts (script "swarm_handoff.sh") (str draft))]
+      (is (str/includes? (:out after-restore) "AUDIT_REQUIRED"))
+      (is (nil? (queued-path (:out after-restore)))))
+    (is (some? (queued-path (:out (run opts (script "swarm_handoff.sh") (str draft))))))))
+
+(deftest swarm-handoff-requires-a-new-audit-after-the-draft-changes
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        draft (fs/path root "tmp" "changed-draft.handoff")
+        opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: changed-draft\n")
+    (let [first-call (run opts (script "swarm_handoff.sh") (str draft))]
+      (is (str/includes? (:out first-call) "AUDIT_REQUIRED")))
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 40\ntask: changed-draft\n")
+    (let [changed-call (run opts (script "swarm_handoff.sh") (str draft))]
+      (is (str/includes? (:out changed-call) "AUDIT_REQUIRED"))
+      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff"))))
+    (let [submitted (run opts (script "swarm_handoff.sh") (str draft))
+          queued (queued-path (:out submitted))]
+      (is (some? queued))
+      (is (str/includes? (read-file queued) "priority: 40\n")))))
+
+(deftest swarm-handoff-invalidates-an-older-task-audit-for-the-same-sender
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        draft (fs/path root "tmp" "switch-task.handoff")
+        opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask_id: first-id\ntask: first\n")
+    (is (str/includes? (:out (run opts (script "swarm_handoff.sh") (str draft)))
+                       "AUDIT_REQUIRED"))
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask_id: second-id\ntask: second\n")
+    (is (str/includes? (:out (run opts (script "swarm_handoff.sh") (str draft)))
+                       "AUDIT_REQUIRED"))
+    (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn"))))
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask_id: first-id\ntask: first\n")
+    (let [return-to-first (run opts (script "swarm_handoff.sh") (str draft))]
+      (is (str/includes? (:out return-to-first) "AUDIT_REQUIRED"))
+      (is (nil? (queued-path (:out return-to-first)))))
+    (is (some? (queued-path (:out (run opts (script "swarm_handoff.sh") (str draft))))))))
+
+(deftest swarm-handoff-invalidates-an-audit-when-the-changed-draft-is-invalid
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        draft (fs/path root "tmp" "invalid-change.handoff")
+        valid "type: git_handoff\nto: receiver\npriority: 50\ntask_id: task-id\ntask: task\n"
+        opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}]
+    (write-file draft valid)
+    (is (str/includes? (:out (run opts (script "swarm_handoff.sh") (str draft)))
+                       "AUDIT_REQUIRED"))
+    (write-file draft (str valid "unknown: value\n"))
+    (is (= 2 (:exit (run (assoc opts :ok? false)
+                         (script "swarm_handoff.sh") (str draft)))))
+    (write-file draft valid)
+    (let [after-repair (run opts (script "swarm_handoff.sh") (str draft))]
+      (is (str/includes? (:out after-repair) "AUDIT_REQUIRED"))
+      (is (nil? (queued-path (:out after-repair)))))
+    (is (some? (queued-path (:out (run opts (script "swarm_handoff.sh") (str draft))))))))
+
+(deftest swarm-handoff-keeps-audits-isolated-by-sender
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        sender-draft (fs/path root "tmp" "sender.handoff")
+        receiver-draft (fs/path root "tmp" "receiver.handoff")
+        sender-opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+        receiver-opts {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}]
+    (write-file sender-draft "type: git_handoff\nto: receiver\npriority: 50\ntask_id: first-id\ntask: first\n")
+    (write-file receiver-draft "type: git_handoff\nto: sender\npriority: 50\ntask_id: second-id\ntask: second\n")
+    (run sender-opts (script "swarm_handoff.sh") (str sender-draft))
+    (run receiver-opts (script "swarm_handoff.sh") (str receiver-draft))
+    (is (= 2 (count (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn"))))
+    (is (some? (queued-path (:out (run sender-opts (script "swarm_handoff.sh")
+                                       (str sender-draft))))))
+    (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn"))))
+    (is (some? (queued-path (:out (run receiver-opts (script "swarm_handoff.sh")
+                                       (str receiver-draft))))))
+    (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn")))))
 
 (deftest swarm-handoff-refuses-ambiguous-current-before-queueing
   ;; Given a sender has ambiguous current work
@@ -709,8 +843,8 @@
         _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
         draft (fs/path root "tmp" "with-files.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: fill-artifacts\n")
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"}} draft)
           queued (queued-path (:out result))
           content (read-file queued)]
       (is (zero? (:exit result)))
@@ -734,8 +868,8 @@
         _ (run {:dir root} "git" "commit" "-q" "-m" "Update docs")
         draft (fs/path root "tmp" "deleted-artifact.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: docs\n")
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"}} draft)
           queued (queued-path (:out result))
           content (read-file queued)]
       (is (zero? (:exit result)))
@@ -778,8 +912,8 @@
                    :task-base-commit jump
                    :body "extras"})
     (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: extras\ncommit: %s\n" base))
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"}} draft)
           queued (queued-path (:out result))
           content (read-file queued)]
       (is (zero? (:exit result)))
@@ -934,7 +1068,8 @@
         (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
                           (script "swarm_handoff.sh") (str draft))]
           (is (zero? (:exit result)))
-          (is (str/includes? (:out result) "HANDOFF QUEUED:")))))))
+          (is (str/includes? (:out result) "HANDOFF QUEUED:"))
+          (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs") "audit_pending/**/*.edn"))))))))
 
 (deftest swarm-handoff-fills-missing-or-invalid-priority
   ;; Given a git_handoff draft that omits priority, or writes priority: normal
@@ -949,8 +1084,8 @@
     (testing "omitted priority becomes 50"
       (let [draft (fs/path root "tmp" "no-priority.handoff")]
         (write-file draft "type: git_handoff\nto: receiver\ntask: fill-priority\n")
-        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                          (script "swarm_handoff.sh") (str draft))
+        (let [result (audit-and-submit-git-handoff
+                      {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
               queued (queued-path (:out result))
               content (when (zero? (:exit result)) (read-file queued))]
           (is (zero? (:exit result)))
@@ -958,8 +1093,8 @@
     (testing "priority: normal becomes 50"
       (let [draft (fs/path root "tmp" "word-priority.handoff")]
         (write-file draft "type: git_handoff\nto: receiver\npriority: normal\ntask: fill-priority-word\n")
-        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                          (script "swarm_handoff.sh") (str draft))
+        (let [result (audit-and-submit-git-handoff
+                      {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
               queued (queued-path (:out result))
               content (when (zero? (:exit result)) (read-file queued))]
           (is (zero? (:exit result)))
@@ -968,8 +1103,8 @@
     (testing "valid two-digit priority is kept"
       (let [draft (fs/path root "tmp" "keep-priority.handoff")]
         (write-file draft "type: git_handoff\nto: receiver\npriority: 00\ntask: keep-priority\n")
-        (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                          (script "swarm_handoff.sh") (str draft))
+        (let [result (audit-and-submit-git-handoff
+                      {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
               queued (queued-path (:out result))
               content (when (zero? (:exit result)) (read-file queued))]
           (is (zero? (:exit result)))
@@ -989,8 +1124,8 @@
         draft (fs/path root "tmp" "with-payload.handoff")]
     (write-file draft (str "type: git_handoff\nto: receiver\npriority: 50\ntask: strip-payload\n\n"
                            "Please merge this and run the tests.\n"))
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
           queued (queued-path (:out result))
           content (when (zero? (:exit result)) (read-file queued))]
       (is (zero? (:exit result)))
@@ -1009,8 +1144,8 @@
         _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
         draft (fs/path root "tmp" "last-role.handoff")]
     (write-file draft "type: git_handoff\nto: sender\npriority: 00\ntask: HTW\n")
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"} :ok? false}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "receiver"} :ok? false} draft)
           queued (queued-path (:out result))
           content (when (zero? (:exit result)) (read-file queued))]
       (is (zero? (:exit result)))
@@ -1028,8 +1163,8 @@
         _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
         draft (fs/path root "tmp" "mid-role.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: HTW\n")
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
           queued (queued-path (:out result))
           content (when (zero? (:exit result)) (read-file queued))]
       (is (zero? (:exit result)))
@@ -1071,8 +1206,8 @@
         _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
         draft (fs/path root "tmp" "hhg.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: Holy Hand Grenade\n")
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
           queued (queued-path (:out result))
           content (when (zero? (:exit result)) (read-file queued))]
       (is (zero? (:exit result)))
@@ -1096,8 +1231,8 @@
         _ (run {:dir wt} "git" "commit" "-q" "-m" "Worktree slice")
         draft (fs/path wt "tmp" "copied-roles.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: copied-roles\n")
-    (let [result (run {:dir wt :env {"SWARMFORGE_ROLE" "sender"}}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir wt :env {"SWARMFORGE_ROLE" "sender"}} draft)
           queued (queued-path (:out result))]
       (is (zero? (:exit result)))
       (is (str/starts-with? (str (fs/canonicalize queued))
@@ -1122,8 +1257,8 @@
         _ (run {:dir root} "git" "merge" "-q" "--no-edit" "side")
         draft (fs/path root "tmp" "merge-files.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: merge-files\n")
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
           queued (queued-path (:out result))
           content (when (zero? (:exit result)) (read-file queued))]
       (is (zero? (:exit result)))
@@ -1178,8 +1313,8 @@
         _ (run {:dir root} "git" "commit" "-q" "-m" "Add slice")
         draft (fs/path root "tmp" "htw.handoff")]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 00\ntask: HTW\n")
-    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
-                      (script "swarm_handoff.sh") (str draft))
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false} draft)
           queued (queued-path (:out result))
           content (when (zero? (:exit result)) (read-file queued))]
       (is (zero? (:exit result)))

@@ -109,7 +109,8 @@
        (when-not (str/blank? role) (str "role: " role "\n"))
        "created_at: " created_at "\n"
        (when updated_at (str "updated_at: " updated_at "\n"))
-       (when-not (str/blank? response) (str "response: " (str/replace response #"\n" "\\n") "\n"))
+       (when-not (str/blank? response)
+         (str "response: " (str/replace response #"\n" (constantly "\\n")) "\n"))
        "\n"
        (or body "")
        (when-not (str/ends-with? (or body "") "\n") "\n")))

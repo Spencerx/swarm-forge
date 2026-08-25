@@ -1,6 +1,7 @@
 (ns swarmforge.pack-ui-test
   (:require [babashka.fs :as fs]
             [cheshire.core :as json]
+            [clojure.edn :as edn]
             [clojure.java.shell :as sh]
             [clojure.string :as str]
             [clojure.test :refer [deftest is run-tests use-fixtures]]))
@@ -138,6 +139,26 @@
 
 (defn pending-names [root]
   (handoff-names (fs/path root ".swarmforge/handoffs/pending_approval")))
+
+(defn write-pending-audit! [root task-id]
+  (write-file
+   (fs/path root ".swarmforge/handoffs/audit_pending/sender" (str task-id ".edn"))
+   (str (pr-str {:candidate {:version 1
+                             :sender "specifier"
+                             :task-id task-id
+                             :type "git_handoff"}})
+        "\n")))
+
+(defn pending-audits [root]
+  (let [dir (fs/path root ".swarmforge/handoffs/audit_pending")]
+    (if (fs/directory? dir)
+      (vec (fs/glob dir "**/*.edn"))
+      [])))
+
+(defn pending-audit-task-ids [root]
+  (->> (pending-audits root)
+       (map #(get-in (edn/read-string (slurp (str %))) [:candidate :task-id]))
+       set))
 
 (defn inbox-names [root roles role]
   (handoff-names (fs/path (pack-worktree root roles role)
@@ -666,6 +687,8 @@
     (create-task root "htw-console-app" "specifier")
     (let [task-id (:id (first (:tasks (web-state root))))
           base (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-pending-audit! root task-id)
+      (write-pending-audit! root "unrelated-id")
       (write-file (fs/path root "story.md") "rejected\n")
       (run {:dir root} "git" "add" "story.md")
       (run {:dir root} "git" "commit" "-q" "-m" "Rejected work")
@@ -689,6 +712,7 @@
           (is (= base head))
           (is (str/includes? branches (str "rejected-" (str/lower-case task-id) "-")))
           (is (not (fs/exists? pending)))
+          (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
           (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks" task-id)))
           (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))))))
 
@@ -1165,7 +1189,7 @@
         answer (fs/path root "tmp" "answer.txt")]
     (setup-pack! root)
     (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
-    (write-file answer "the spec is ready\n")
+    (write-file answer "the spec is ready\nwith two documents\n")
     (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
                   "--test-post-chat" (str root) "status?")
     (let [listed (run {:dir root}
@@ -1175,9 +1199,12 @@
       (is (str/starts-with? id "req-"))
       (run {:dir root} (script "pack_dashboard_request.sh") "answer" id (str answer))
       (let [chat (:chat (web-state root))
-            row (first chat)]
+            row (first chat)
+            stored (slurp (str (first (fs/list-dir
+                                       (fs/path root ".swarmforge/dashboard/requests/done")))))]
         (is (= "status?" (str/trim (:body row))))
-        (is (= "the spec is ready" (str/trim (:response row))))
+        (is (= "the spec is ready\nwith two documents" (:response row)))
+        (is (str/includes? stored "response: the spec is ready\\nwith two documents\n"))
         (is (= "done" (:status row)))))))
 
 (deftest pack-dashboard-documents-menu-paints-above-the-board
@@ -1496,10 +1523,13 @@
         pending (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
         _ (write-file pending
                       "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\npayload\n")
+        _ (write-pending-audit! root "HTW")
+        _ (write-pending-audit! root "unrelated-id")
         result (pack-web root false "--test-delete-task" (str root) "HTW")]
     (is (zero? (:exit result)))
     (is (nil? (task-lane root "HTW")))
     (is (not (fs/exists? pending)))
+    (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
     (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
     (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks")))))
 
@@ -1514,6 +1544,8 @@
         pending (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
         _ (write-file pending
                       "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\nold\n")
+        _ (write-pending-audit! root "HTW")
+        _ (write-pending-audit! root "unrelated-id")
         result (pack-web root false "--test-retry-task" (str root) "HTW" "new payload")
         card (first (:tasks (web-state root)))
         notes (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))
@@ -1522,6 +1554,7 @@
     (is (= "specifier" (:lane card)))
     (is (not= "REJECTED" (:status card)))
     (is (not (fs/exists? pending)))
+    (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
     (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
     (is (seq notes))
     (is (str/includes? note "new payload"))
@@ -1588,13 +1621,17 @@
       (is (str/includes? (:body item) "Does the bat drop to any of 20 rooms?"))
       (is (= "pending" (:status item)))
       (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
-                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.")
+                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.\nUse all rooms.")
       (let [argv (slurp argv-file)
-            done (first (:clarifications (web-state root)))]
+            done (first (:clarifications (web-state root)))
+            stored (slurp (str (first (fs/list-dir
+                                       (fs/path root ".swarmforge/dashboard/clarifications/done")))))]
         (is (str/includes? argv id))
         (is (str/includes? argv "Yes, 1 to 20."))
+        (is (str/includes? argv "Use all rooms."))
         (is (= "done" (:status done)))
-        (is (str/includes? (:response done) "Yes, 1 to 20."))))))
+        (is (= "Yes, 1 to 20.\nUse all rooms." (:response done)))
+        (is (str/includes? stored "response: Yes, 1 to 20.\\nUse all rooms.\n"))))))
 
 (deftest pack-web-serves-the-task-body
   ;; Given New Task HTW with body

@@ -3,6 +3,7 @@
 (ns pack-web
   (:require [babashka.fs :as fs]
             [cheshire.core :as json]
+            [clojure.edn :as edn]
             [clojure.java.shell :refer [sh]]
             [clojure.string :as str]
             [org.httpkit.server :as http]))
@@ -683,6 +684,24 @@
   (doseq [path (apply task-handoffs root task-id aliases)]
     (fs/delete-if-exists path)))
 
+(defn audit-task-id [path]
+  (try
+    (get-in (edn/read-string (slurp (str path))) [:candidate :task-id])
+    (catch Exception _ nil)))
+
+(defn task-audits [root task-id & aliases]
+  (let [wanted (set (remove str/blank? (cons task-id aliases)))
+        dir (fs/path root ".swarmforge" "handoffs" "audit_pending")]
+    (if (fs/directory? dir)
+      (->> (fs/glob dir "**/*.edn")
+           (filter #(contains? wanted (audit-task-id %)))
+           vec)
+      [])))
+
+(defn drop-task-audits! [root task-id & aliases]
+  (doseq [path (apply task-audits root task-id aliases)]
+    (fs/delete-if-exists path)))
+
 (defn reject-notify [root name]
   (fs/path root ".swarmforge" "notify" (str "reject-" name)))
 
@@ -699,7 +718,8 @@
     (throw (ex-info (str "Not rejected: " name) {:http-status 400})))
   (let [task-id (task-id-for-name root name)]
     (archive-rejected! root task-id name)
-    (drop-task-handoffs! root task-id name))
+    (drop-task-handoffs! root task-id name)
+    (drop-task-audits! root task-id name))
   (pack-board root "delete" "--name" name)
   (fs/delete-if-exists (reject-notify root name)))
 
@@ -714,6 +734,7 @@
     (when-not (str/blank? body)
       (spit (str file) (if (str/ends-with? body "\n") body (str body "\n"))))
     (drop-task-handoffs! root task-id name)
+    (drop-task-audits! root task-id name)
     (fs/delete-if-exists (reject-notify root name))
     (queue-new-task-note! root task-id name (if (str/blank? body)
                                               (if (fs/regular-file? file) (slurp (str file)) "")
@@ -771,7 +792,7 @@
        (when-not (str/blank? role) (str "role: " role "\n"))
        "created_at: " created_at "\n"
        (when-not (str/blank? response)
-         (str "response: " (str/replace response #"\n" "\\n") "\n"))
+         (str "response: " (str/replace response #"\n" (constantly "\\n")) "\n"))
        "\n"
        (or body "")
        (when-not (str/ends-with? (or body "") "\n") "\n")))
@@ -863,6 +884,7 @@
     (archive-rejected! root task-id task)
     (preserve-and-rollback! root headers)
     (drop-task-handoffs! root task-id task)
+    (drop-task-audits! root task-id task)
     (write-reject-notify! root task)
     (when-not (str/blank? task)
       (inject-master! root (reject-message task)))))
