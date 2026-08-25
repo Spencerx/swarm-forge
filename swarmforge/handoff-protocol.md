@@ -247,13 +247,22 @@ Responsibilities:
 - Preserve `task` from the draft for `git_handoff`.
 - On the first valid `git_handoff` call, record the exact candidate under
   `.swarmforge/handoffs/audit_pending/`, print `AUDIT_REQUIRED`, and leave the
-  draft and current inbox item in place.
+  draft and current inbox item in place. Atomically increment the board card's
+  cumulative audit count for each new challenge; do not increment when the
+  unchanged candidate is submitted.
+- Direct the sender to re-read the complete inbound payload and referenced
+  sources, trace every requirement and constraint to role-appropriate work and
+  verification evidence, examine boundaries and failure cases, and fix and
+  re-audit every finding. Passing checks alone do not establish completeness.
 - Queue a `git_handoff` only when the sender repeats the unchanged candidate.
   Any changed invocation invalidates that sender's previous challenge. Keep
   challenges isolated between senders and remove task challenges on rejection,
   retry, or deletion.
 - Complete the sender's current inbox item only after the audited handoff has
   been queued. Approval, when required, occurs after this audit gate.
+- Preserve the cumulative audit count with the timestamped task ID through
+  lane changes, approval, rejection, and retry. Deletion removes it, and a new
+  timestamped task ID starts at zero even when it reuses a visible task name.
 - Generate the canonical body.
 - Atomically install the completed file into `outbox/`.
 

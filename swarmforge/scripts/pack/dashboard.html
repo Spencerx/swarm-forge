@@ -8,9 +8,10 @@
 :root{--bg:#eef0eb;--panel:#fbfbf8;--ink:#1e221f;--muted:#68726c;--line:#d5d9d2;--line-soft:#e8ebe5;--accent:#3d5a45;--amber:#c9851a;--amber-bg:#fff6e5;--red:#9b1c1c;--green:#2f6b3a;--green-bg:#e7f3ea;--chip:#e8eee9;--card:#fffef9;--rail:340px;--card-min-w:148px;--card-min-h:72px;--card-max-w:200px;font-family:ui-sans-serif,system-ui,sans-serif}
 *{box-sizing:border-box}html,body{height:100%;margin:0}
 body{background:#cfd4cc;color:var(--ink);height:100vh;display:flex;flex-direction:column;overflow:hidden}
-.cockpit{flex:1;min-height:0;margin:10px;background:var(--bg);border:1px solid #b8bfb6;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+.cockpit{flex:1;min-width:0;min-height:0;width:calc(100% - 20px);margin:10px;background:var(--bg);border:1px solid #b8bfb6;border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
 header.top{display:flex;gap:12px;align-items:center;padding:10px 14px;background:#f4f5f1;border-bottom:1px solid var(--line);flex-wrap:wrap}
 header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.meta .dot{color:var(--green)}.spacer{flex:1}
+.pack-identity,.pack-actions{display:flex;gap:12px;align-items:center}
 .error{color:var(--red);padding:0 14px;font-size:12px;min-height:1em}
 .btn{border:1px solid #9aa59e;background:#fff;color:var(--ink);padding:5px 10px;border-radius:7px;font-size:12px;cursor:pointer}
 .btn:hover,.btn:focus-visible{background:#f0f2ee;color:var(--ink);border-color:#8a9188}
@@ -45,8 +46,10 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .batch{display:flex;flex-direction:column;gap:0;width:max-content;min-width:var(--card-min-w)}
 .card{background:var(--card);border:1px solid #d0cbb8;border-radius:8px;padding:7px 8px;font-size:11px;width:max-content;max-width:var(--card-max-w);min-width:var(--card-min-w);min-height:var(--card-min-h);cursor:pointer;display:flex;flex-direction:column;gap:3px}
 .card:hover{border-color:#a89f7e}
-.card .title{font-weight:700;font-size:12px}
-.card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block}
+.card .title{font-weight:700;font-size:12px;display:flex;align-items:flex-start;gap:6px;width:100%;min-width:0}
+.card .title .name{overflow:hidden;text-overflow:ellipsis;max-width:11rem;display:block;flex:1;min-width:0}
+.audit-count{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto;color:var(--muted);font-size:10px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.2}
+.audit-icon{font-size:10px}
 .card .status{color:var(--muted);font-size:10px;white-space:normal;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical}
 .card-rejected .status{color:var(--red);font-weight:700;-webkit-line-clamp:1}
 .card-del{margin-left:auto;padding:1px 6px;font-size:10px;line-height:1.2}
@@ -94,16 +97,31 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .float .actions{display:flex;gap:8px;justify-content:flex-end}
 .note{font-size:11px;color:var(--muted);margin:-4px 0 10px}
 .doc-body{max-height:min(60vh,480px);overflow:auto;white-space:pre-wrap;font-size:11px;background:#f4f5f1;border:1px solid var(--line);border-radius:6px;padding:8px}
+@media (max-width:700px){
+  header.top{align-items:flex-start;flex-direction:column}
+  header.top .spacer{display:none}
+  .board-toolbar span:last-child{display:none}
+  .body{display:flex;flex-direction:column;overflow:auto}
+  .splitter{display:none}
+  .board{flex:0 0 390px;min-height:390px}
+  .rail{flex:0 0 580px;min-height:580px;border-top:1px solid var(--line)}
+  .rail section.work-sec{flex:0 0 220px}
+  .rail section.ts{flex:1 1 auto}
+}
 </style>
 </head>
 <body>
 <div class="cockpit">
   <header class="top">
-    <h1 id="pack-title">SwarmForge Pack</h1>
-    <span class="meta" id="pack-meta"><span class="dot">●</span> live</span>
+    <div class="pack-identity">
+      <h1 id="pack-title">SwarmForge Pack</h1>
+      <span class="meta" id="pack-meta"><span class="dot">●</span> live</span>
+    </div>
     <span class="spacer"></span>
-    <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
-    <button class="btn btn-danger" type="button" id="teardown-btn">Teardown</button>
+    <div class="pack-actions">
+      <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
+      <button class="btn btn-danger" type="button" id="teardown-btn">Teardown</button>
+    </div>
   </header>
   <p id="error" class="error"></p>
 
@@ -215,6 +233,19 @@ function cardEl(task, opts) {
   name.className = "name";
   name.textContent = task.name;
   title.appendChild(name);
+  const audit = document.createElement("span");
+  audit.className = "audit-count";
+  audit.title = "Audit count: " + (task.audit_count || 0);
+  const auditIcon = document.createElement("span");
+  auditIcon.className = "audit-icon";
+  auditIcon.setAttribute("role", "img");
+  auditIcon.setAttribute("aria-label", "Audit count");
+  auditIcon.title = "Audit count";
+  auditIcon.textContent = "\u2713";
+  const auditValue = document.createElement("span");
+  auditValue.textContent = String(task.audit_count || 0);
+  audit.append(auditIcon, auditValue);
+  title.appendChild(audit);
   card.appendChild(title);
   if (task.status === "REJECTED") {
     const foot = document.createElement("div");

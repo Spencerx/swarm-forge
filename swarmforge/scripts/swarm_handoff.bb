@@ -401,9 +401,25 @@
   (println "TASK_ID:" (:task-id candidate))
   (println "COMMIT:" (:commit candidate))
   (println)
-  (println "Audit the completed task against its payload and your role responsibilities.")
-  (println "Review the full diff, tests, artifacts, and unrelated changes.")
-  (println "Fix and commit any findings, then run the same handoff command again."))
+  (println "Re-read the complete inbound task payload and every source it references.")
+  (println "Compare the completed work product against every requirement and constraint,")
+  (println "including interactions, boundaries, failure cases, and negative requirements.")
+  (println "Establish requirement-to-evidence traceability appropriate to your role:")
+  (println "every requirement must be covered by the work, supported by relevant verification,")
+  (println "or identified as a gap.")
+  (println "Review the complete committed diff, tests and checks, generated artifacts,")
+  (println "and unrelated working-tree changes. Passing tools or clean formatting alone do")
+  (println "not establish that the task is complete.")
+  (println "Fix every finding, commit the corrections, rerun applicable checks, and repeat")
+  (println "this audit against the revised candidate before running the handoff command again."))
+
+(defn increment-audit-count! [task-id]
+  (let [script (str (fs/path script-dir "pack_board.sh"))
+        result (command (project-root) script "increment-audit"
+                        "--root" (str (project-root))
+                        "--task-id" task-id)]
+    (when-not (zero? (:exit result))
+      (exit! 1 (str/trim (str (:err result) "\n" (:out result)))))))
 
 (defn submit-after-audit! [candidate submit!]
   (with-audit-lock
@@ -417,6 +433,7 @@
           (do
             (delete-sender-audits! (:sender candidate))
             (write-audit! path candidate)
+            (increment-audit-count! (:task-id candidate))
             (print-audit-required! candidate)
             nil))))))
 

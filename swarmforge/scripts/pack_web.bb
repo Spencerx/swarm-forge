@@ -159,11 +159,14 @@
   (str/trim (pack-board root "master-lane")))
 
 (defn task-entry [line]
-  (let [[name lane _created updated task-id] (str/split line #"\t" -1)]
+  (let [[name lane _created updated task-id audit-count] (str/split line #"\t" -1)]
     {:name name
      :id (or (not-empty task-id) name)
      :lane lane
-     :updated_at updated}))
+     :updated_at updated
+     :audit_count (if (and audit-count (re-matches #"[0-9]+" audit-count))
+                    (Long/parseLong audit-count)
+                    0)}))
 
 (defn last-n-lines [text n]
   (vec (take-last n (str/split-lines (or text "")))))

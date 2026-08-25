@@ -106,6 +106,16 @@
 (defn head-sha [root]
   (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD"))))
 
+(defn board-audit-count [root task-name]
+  (let [file (fs/path root ".swarmforge/board/tasks.tsv")]
+    (when (fs/regular-file? file)
+      (some (fn [line]
+              (let [[name _lane _created _updated _task-id audit-count]
+                    (str/split line #"\t" -1)]
+                (when (= task-name name)
+                  (Long/parseLong (or (not-empty audit-count) "0")))))
+            (str/split-lines (read-file file))))))
+
 (defn queued-path [out]
   (some->> (str/split-lines out)
            (some (fn [line]
@@ -591,6 +601,8 @@
     (write-file (fs/path root ".swarmforge/board/tasks.tsv")
                 (str "jump\tsender\tcreated\tupdated\tjump-id\n"
                      "extras\tsender\tcreated\tupdated\textras-id\n"))
+    (is (= 0 (board-audit-count root "jump")))
+    (is (= 0 (board-audit-count root "extras")))
     (put-handoff! root "in_process" current-file
                   {:id "20260615T000001Z_000001_from_planner"
                    :from "planner" :to "sender" :recipient "sender"
@@ -615,6 +627,8 @@
       (is (str/includes? (:out first-call) "AUDIT_REQUIRED"))
       (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")))
       (is (= 1 (count audit-files)))
+      (is (= 1 (board-audit-count root "jump")))
+      (is (= 0 (board-audit-count root "extras")))
       (is (fs/exists? (handoff-path root "in_process" current-file)))
       (is (not (fs/exists? completed)))
       (is (fs/exists? draft)))
@@ -627,6 +641,7 @@
       (is (str/includes? (:out result) "COMPLETED:"))
       (is (str/includes? (:out result) "MAIL_WAITING"))
       (is (str/includes? content "task_id: jump-id\n"))
+      (is (= 1 (board-audit-count root "jump")))
       (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn")))
       (is (some? (header completed "completed_at")))
       (is (fs/exists? queued-next))
@@ -636,20 +651,25 @@
   (let [root (tmp-dir)
         _ (init-repo! root)
         _ (setup-project! root)
+        _ (write-file (fs/path root ".swarmforge/board/tasks.tsv")
+                      "changed-commit\tsender\tcreated\tupdated\tchanged-commit-id\t0\n")
         draft (fs/path root "tmp" "changed-commit.handoff")
         opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}]
     (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: changed-commit\n")
     (let [first-call (run opts (script "swarm_handoff.sh") (str draft))]
-      (is (str/includes? (:out first-call) "AUDIT_REQUIRED")))
+      (is (str/includes? (:out first-call) "AUDIT_REQUIRED"))
+      (is (= 1 (board-audit-count root "changed-commit"))))
     (write-file (fs/path root "changed.md") "changed\n")
     (run {:dir root} "git" "add" "changed.md")
     (run {:dir root} "git" "commit" "-q" "-m" "Change after audit")
     (let [changed-call (run opts (script "swarm_handoff.sh") (str draft))]
       (is (str/includes? (:out changed-call) "AUDIT_REQUIRED"))
+      (is (= 2 (board-audit-count root "changed-commit")))
       (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff"))))
     (let [submitted (run opts (script "swarm_handoff.sh") (str draft))
           queued (queued-path (:out submitted))]
       (is (some? queued))
+      (is (= 2 (board-audit-count root "changed-commit")))
       (is (str/includes? (read-file queued) (str "commit: " (head-sha root) "\n"))))))
 
 (deftest swarm-handoff-invalidates-an-audit-before-rejecting-a-changed-commit

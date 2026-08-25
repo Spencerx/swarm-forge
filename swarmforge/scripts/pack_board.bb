@@ -3,7 +3,9 @@
 (ns pack-board
   (:require [babashka.fs :as fs]
             [clojure.java.shell :refer [sh]]
-            [clojure.string :as str]))
+            [clojure.string :as str])
+  (:import [java.nio.channels FileChannel]
+           [java.nio.file OpenOption StandardOpenOption]))
 
 (def usage-text
   (str "Usage:\n"
@@ -19,6 +21,7 @@
        "  pack_board.sh archive --role <role> [--root <dir>]\n"
        "  pack_board.sh archive <role>\n"
        "  pack_board.sh archive-all [--root <dir>]\n"
+       "  pack_board.sh increment-audit --task-id <task-id> [--root <dir>]\n"
        "  pack_board.sh delete --name <name> [--root <dir>]\n"
        "  pack_board.sh delete <name>"))
 
@@ -85,6 +88,16 @@
 (defn tasks-file [root]
   (fs/path (board-dir root) "tasks.tsv"))
 
+(defn with-board-lock [root f]
+  (let [dir (board-dir root)
+        path (fs/path dir "tasks.lock")
+        options (into-array OpenOption [StandardOpenOption/CREATE
+                                        StandardOpenOption/WRITE])]
+    (fs/create-dirs dir)
+    (with-open [channel (FileChannel/open path options)]
+      (.lock channel)
+      (f))))
+
 (defn task-body-file [root name]
   (fs/path (board-dir root) (str name ".txt")))
 
@@ -121,10 +134,12 @@
 
 (defn write-rows [file rows]
   (fs/create-dirs (fs/parent file))
-  (spit (str file)
-        (if (seq rows)
-          (str (str/join "\n" rows) "\n")
-          "")))
+  (let [tmp (fs/create-temp-file {:dir (fs/parent file) :prefix ".tasks."})]
+    (spit (str tmp)
+          (if (seq rows)
+            (str (str/join "\n" rows) "\n")
+            ""))
+    (fs/move tmp file {:replace-existing true})))
 
 (defn row-name [line]
   (first (str/split line #"\t")))
@@ -137,7 +152,7 @@
   ([name lane now]
    (task-row name lane now (new-task-id name)))
   ([name lane now task-id]
-   (str/join "\t" [name lane now now task-id])))
+   (str/join "\t" [name lane now now task-id "0"])))
 
 (defn task-name [opts]
   (or (:name opts) (second (:positional opts))))
@@ -156,17 +171,19 @@
         file (tasks-file root)]
     (require-value! name "task name")
     (require-value! lane "lane")
-    (let [rows (read-rows file)]
-      (when (find-task rows name)
-        (exit! 1 (str "Duplicate task name: " name)))
-      (write-rows file (conj rows (task-row name lane (timestamp) (or (:task-id opts) (new-task-id name)))))
-      (write-body! root name (:text opts)))))
+    (with-board-lock
+      root
+      (fn []
+        (let [rows (read-rows file)]
+          (when (find-task rows name)
+            (exit! 1 (str "Duplicate task name: " name)))
+          (write-rows file (conj rows (task-row name lane (timestamp) (or (:task-id opts) (new-task-id name)))))
+          (write-body! root name (:text opts)))))))
 
 (defn rewrite-lane [line name lane]
-  (let [[row-name _ created _updated task-id] (str/split line #"\t" -1)]
+  (let [[row-name _ created _updated task-id audit-count] (str/split line #"\t" -1)]
     (if (= (str/lower-case (or name "")) (str/lower-case (or row-name "")))
-      (str/join "\t" (cond-> [row-name lane created (timestamp)]
-                       (not (str/blank? task-id)) (conj task-id)))
+      (str/join "\t" [row-name lane created (timestamp) task-id (or (not-empty audit-count) "0")])
       line)))
 
 (defn set-lane! [opts lane]
@@ -174,10 +191,13 @@
         file (tasks-file (resolve-root opts))]
     (require-value! name "task name")
     (require-value! lane "lane")
-    (let [rows (read-rows file)]
-      (when-not (find-task rows name)
-        (exit! 1 (str "Unknown task name: " name)))
-      (write-rows file (mapv #(rewrite-lane % name lane) rows)))))
+    (with-board-lock
+      (resolve-root opts)
+      (fn []
+        (let [rows (read-rows file)]
+          (when-not (find-task rows name)
+            (exit! 1 (str "Unknown task name: " name)))
+          (write-rows file (mapv #(rewrite-lane % name lane) rows)))))))
 
 (defn move! [opts]
   (set-lane! opts (task-lane opts)))
@@ -262,18 +282,51 @@
     (doseq [role roles]
       (archive-session! root role))))
 
+(defn parse-count [value]
+  (if (and value (re-matches #"[0-9]+" value))
+    (Long/parseLong value)
+    0))
+
+(defn rewrite-audit-count [line task-id]
+  (let [[name lane created updated row-task-id audit-count] (str/split line #"\t" -1)
+        row-key (or (not-empty row-task-id) name)]
+    (if (= task-id row-key)
+      (str/join "\t" [name lane created updated row-task-id (str (inc (parse-count audit-count)))])
+      line)))
+
+(defn increment-audit! [opts]
+  (let [task-id (:task-id opts)
+        root (resolve-root opts)
+        file (tasks-file root)]
+    (require-value! task-id "task ID")
+    (when (fs/exists? file)
+      (with-board-lock
+        root
+        (fn []
+          (let [rows (read-rows file)
+                present? (some #(let [[name _lane _created _updated row-task-id]
+                                      (str/split % #"\t" -1)]
+                                  (= task-id (or (not-empty row-task-id) name)))
+                               rows)]
+            (when-not present?
+              (exit! 1 (str "Unknown task ID: " task-id)))
+            (write-rows file (mapv #(rewrite-audit-count % task-id) rows))))))))
+
 (defn delete! [opts]
   (let [name (task-name opts)
         root (resolve-root opts)
         file (tasks-file root)]
     (require-value! name "task name")
-    (let [rows (read-rows file)]
-      (when-not (find-task rows name)
-        (exit! 1 (str "Unknown task name: " name)))
-      (write-rows file (filterv #(not= (str/lower-case name)
-                                       (str/lower-case (or (row-name %) "")))
-                                rows))
-      (fs/delete-if-exists (task-body-file root name)))))
+    (with-board-lock
+      root
+      (fn []
+        (let [rows (read-rows file)]
+          (when-not (find-task rows name)
+            (exit! 1 (str "Unknown task name: " name)))
+          (write-rows file (filterv #(not= (str/lower-case name)
+                                           (str/lower-case (or (row-name %) "")))
+                                    rows))
+          (fs/delete-if-exists (task-body-file root name)))))))
 
 (def commands
   {"create" create!
@@ -284,6 +337,7 @@
    "master-lane" master-lane!
    "archive" archive!
    "archive-all" archive-all!
+   "increment-audit" increment-audit!
    "delete" delete!})
 
 (defn -main [& args]

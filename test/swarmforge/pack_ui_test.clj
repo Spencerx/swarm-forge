@@ -116,6 +116,9 @@
   (let [cols (str/split (or (task-row (:out (list-tasks root)) name) "") #"\t")]
     (nth cols 1 nil)))
 
+(defn increment-audit! [root task-id]
+  (pack-board root true "increment-audit" "--root" (str root) "--task-id" task-id))
+
 (defn queue-handoff! [root {:keys [from to task artifacts non-forwarding]}]
   (write-file
    (fs/path root ".swarmforge/handoffs/outbox"
@@ -183,6 +186,9 @@
 (defn web-state [root]
   (json/parse-string (:out (pack-web root true "--test-state" (str root))) true))
 
+(defn task-card [root name]
+  (some #(when (= name (:name %)) %) (:tasks (web-state root))))
+
 (defn start-tmux! [root sessions]
   (let [sock (str (fs/path root "tmux.sock"))]
     (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
@@ -219,7 +225,8 @@
     (is (= "htw-console-app" (nth cols 0 nil)))
     (is (= "specifier" (nth cols 1 nil)))
     (is (re-matches #"\d{4}-\d{2}-\d{2}T.*Z" (nth cols 2 "")))
-    (is (= (nth cols 2 nil) (nth cols 3 nil)))))
+    (is (= (nth cols 2 nil) (nth cols 3 nil)))
+    (is (= "0" (nth cols 5 nil)))))
 
 (deftest new-task-writes-the-card-and-body
   ;; Given specifier is master
@@ -240,6 +247,16 @@
       (is (zero? (:exit created)))
       (is (= "specifier" (task-lane root "htw-console-app")))
       (is (= text body)))))
+
+(deftest pack-board-serializes-concurrent-audit-increments
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        increments (doall (repeatedly 8 #(future (increment-audit! root task-id))))]
+    (doseq [increment increments]
+      @increment)
+    (is (= 8 (:audit_count (task-card root "HTW"))))))
 
 (deftest pack-board-lists-lanes-in-role-order
   ;; Given roles specifier, coder, QA
@@ -284,11 +301,13 @@
         roles ["specifier" "coder" "cleaner"]
         sock (do (setup-pack! root roles)
                  (create-task root "htw-console-app" "coder")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "coder" :to "cleaner" :task "htw-console-app"})
                  (start-tmux! root roles))]
     (try
       (handoffd-once root)
       (is (= "cleaner" (task-lane root "htw-console-app")))
+      (is (= 1 (:audit_count (task-card root "htw-console-app"))))
       (finally
         (stop-tmux! sock)))))
 
@@ -328,6 +347,7 @@
       (is (str/starts-with? (:id card) "20"))
       (is (= "specifier" (:lane card)))
       (is (= updated (:updated_at card)))
+      (is (= 0 (:audit_count card)))
       (is (= "" (:status card))))
     (is (= [] (:approvals state)))
     (is (= six-pack-roles (mapv :role (:work_in_flight state))))))
@@ -414,6 +434,7 @@
         artifacts "features/console.feature,qa/console.md"
         sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "specifier")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"
                                        :artifacts artifacts})
                  (start-tmux! root six-pack-roles))]
@@ -423,6 +444,7 @@
         (is (= ["50_from_specifier_to_coder.handoff"] (pending-names root)))
         (is (= [] (inbox-names root six-pack-roles "coder")))
         (is (= "specifier" (task-lane root "htw-console-app")))
+        (is (= 1 (:audit_count (first (:tasks state)))))
         (is (= [{:id "50_from_specifier_to_coder"
                  :gate "spec → coder"
                  :task_id "htw-console-app"
@@ -636,6 +658,7 @@
   (let [root (tmp-dir)
         sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "specifier")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"
                                        :artifacts "features/console.feature"})
                  (start-tmux! root six-pack-roles))]
@@ -646,6 +669,7 @@
         (handoffd-once root)
         (is (seq (inbox-names root six-pack-roles "coder")))
         (is (= "coder" (task-lane root "htw-console-app")))
+        (is (= 1 (:audit_count (task-card root "htw-console-app"))))
         (is (= [] (pending-names root)))
         (is (= [] (:approvals (web-state root)))))
       (finally
@@ -658,6 +682,7 @@
   (let [root (tmp-dir)
         sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "specifier")
+                 (increment-audit! root (:id (task-card root "htw-console-app")))
                  (queue-handoff! root {:from "specifier" :to "coder" :task "htw-console-app"})
                  (start-tmux! root six-pack-roles))]
     (try
@@ -667,6 +692,7 @@
         (is (= [] (pending-names root)))
         (is (= [] (inbox-names root six-pack-roles "coder")))
         (is (= "specifier" (task-lane root "htw-console-app")))
+        (is (= 1 (:audit_count (task-card root "htw-console-app"))))
         (is (= [] (:approvals (web-state root))))
         (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
       (finally
@@ -1245,6 +1271,19 @@
   (let [html (dashboard-html (tmp-dir))]
     (is (str/includes? html "task.status"))))
 
+(deftest pack-dashboard-cards-show-audit-count-without-changing-card-shape
+  (let [html (dashboard-html (tmp-dir))
+        card-source (dashboard-js-fn html "cardEl")]
+    (is (str/includes? card-source "task.audit_count"))
+    (is (str/includes? card-source "aria-label\", \"Audit count"))
+    (is (str/includes? card-source "title.appendChild(audit)"))
+    (is (re-find #"(?s)\.card \.title\{[^}]*display:flex" html))
+    (is (re-find #"(?s)\.audit-count\{[^}]*flex:0 0 auto" html))
+    (is (str/includes? html "thin: idx > 0"))
+    (is (str/includes? html "card-rejected"))
+    (is (re-find #"name=\"viewport\"" html))
+    (is (re-find #"(?s)@media \(max-width:700px\).*\.body\{[^}]*flex-direction:column" html))))
+
 (deftest pack-dashboard-html-flushes-batched-cards
   ;; When serving dashboard.html
   ;; Then a batch group has no vertical gap between its cards
@@ -1506,11 +1545,17 @@
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
+        old-id (:id (task-card root "HTW"))
+        _ (increment-audit! root old-id)
         _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
         result (pack-web root false "--test-delete-task" (str root) "HTW")]
     (is (zero? (:exit result)))
     (is (nil? (task-lane root "HTW")))
-    (is (not (fs/exists? (fs/path root ".swarmforge/board/HTW.txt"))))))
+    (is (not (fs/exists? (fs/path root ".swarmforge/board/HTW.txt"))))
+    (create-task root "HTW" "specifier")
+    (let [replacement (task-card root "HTW")]
+      (is (not= old-id (:id replacement)))
+      (is (= 0 (:audit_count replacement))))))
 
 (deftest pack-web-delete-rejected-purges-handoffs-into-rejected-tasks
   ;; Given a rejected HTW card with a pending git_handoff
@@ -1519,6 +1564,7 @@
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
+        _ (increment-audit! root (:id (task-card root "HTW")))
         _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
         pending (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
         _ (write-file pending
@@ -1540,6 +1586,7 @@
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
+        _ (increment-audit! root (:id (task-card root "HTW")))
         _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
         pending (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
         _ (write-file pending
@@ -1552,6 +1599,7 @@
         note (slurp (str (first notes)))]
     (is (zero? (:exit result)))
     (is (= "specifier" (:lane card)))
+    (is (= 1 (:audit_count card)))
     (is (not= "REJECTED" (:status card)))
     (is (not (fs/exists? pending)))
     (is (= #{"unrelated-id"} (pending-audit-task-ids root)))

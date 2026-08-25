@@ -1,58 +1,79 @@
-# Approval unblock does not wake sender role
+# Show an audit counter on every task card
 
-Observed twice in `/Users/unclebob/junk/four-squad`: a queued task remained in
-`specifier`'s inbox after the previous specifier-to-coder handoff was approved
-and delivered.
+## Problem
 
-Failure chain:
+The dashboard does not show how many audit passes a task has accumulated as it
+moves through the squad. The audit challenge is temporary and is deleted after
+a successful handoff, so the current pending-audit state cannot provide a
+cumulative count.
 
-- The specifier completed `htw` and queued a git handoff to coder.
-- Before that handoff was approved, the specifier tried to receive the next
-  task.
-- `ready_for_next.sh` correctly refused to dequeue `jump` because the specifier
-  still had an active pending approval:
+## Behavior
 
-  ```text
-  WAITING_FOR_APPROVAL: current git handoff is still active
-  ```
+- Initialize every new timestamped task ID with an audit count of zero.
+- Increment the task's count atomically whenever `swarm_handoff.sh` records a
+  new audit challenge and returns `AUDIT_REQUIRED`.
+- Do not increment for the unchanged second call that submits an audited
+  handoff.
+- A changed candidate that requires another audit increments the count again.
+- Keep the count with the task ID as the card moves between roles and through
+  approval. Rejection and retry preserve the count; deletion removes it.
+- A later task with the same visible name but a new timestamped task ID starts
+  at zero.
 
-- The htw handoff was later approved and delivered to coder.
-- That approval cleared the condition that had blocked the specifier, but the
-  specifier was not notified or rescheduled.
-- `jump` stayed in `.swarmforge/handoffs/inbox/new` until someone manually
-  prompted the specifier to run `ready_for_next.sh` again.
-- The same pattern repeated after `jump` was approved: `jump` moved to `coder`,
-  but the later `extras` task remained queued for `specifier` instead of
-  starting.
-- By contrast, reject/retry and reject/delete paths do wake or otherwise
-  stimulate specifier: rejection injects `Rejected: <task>` into the master pane,
-  and retry queues a fresh New Task note that `handoffd` delivers normally.
+Expose the cumulative value as `audit_count` in the dashboard state. Render an
+audit icon and the integer in the top-right of every card, including zero-count,
+rejected, thin, and batched cards. Put it in the title row beside the task name
+so it cannot overlap the name, status text, controls, or batch presentation.
+The icon must have an accessible label and hover tooltip.
 
-Root cause: approval delivery changes the sender role's eligibility, but the
-handoff/approval workflow only notifies the receiver. A role that previously hit
-`WAITING_FOR_APPROVAL` can remain idle even though queued work is now available.
-The rejection paths have their own wake-ups; the missing path is approval.
+## Verification
 
-Fix:
+Add behavioral coverage for initial zero, first audit, unchanged submission,
+re-audit after a changed candidate, role transition, approval, rejection and
+retry, deletion, and isolation between timestamped task IDs that share a
+visible name. Add dashboard rendering coverage for normal, rejected, thin, and
+batched cards at desktop and mobile widths.
 
-- When a pending approval is approved and delivered, identify the sender role
-  from the approved git handoff.
-- After delivery, check whether that sender has queued inbound work that is now
-  eligible for `ready_for_next.sh`.
-- If so, notify that sender role to run `ready_for_next.sh`.
-- The notification should be sent only after the pending approval has been
-  removed or moved out of `pending_approval`, so the sender does not immediately
-  hit the same `WAITING_FOR_APPROVAL` state again.
-- Keep rejection handling as-is unless a separate rejection-specific failure is
-  observed; reject/retry and reject/delete already appear to stimulate the
-  specifier correctly.
+# Strengthen the handoff audit directive
 
-Expected behavior:
+## Problem
 
-- If `htw` blocks specifier from starting `jump` while htw waits for approval,
-  approving htw wakes specifier.
-- `jump` starts as soon as the htw approval is delivered to coder.
-- If `jump` blocks specifier from starting `extras` while jump waits for
-  approval, approving jump wakes specifier.
-- `extras` starts as soon as the jump approval is delivered to coder.
-- Coder's in-process htw work does not block specifier from starting `jump`.
+The audit gate creates a deliberate pause, but the current directive can be
+satisfied by a mechanical review of formatting, tests, and changed files. An
+agent can complete that review without comparing its work product to the full
+task payload, allowing missing requirements, interactions, boundaries, and
+failure cases to pass through an audited handoff.
+
+An audit count records that an audit was requested; it does not establish that
+the audit was semantically complete.
+
+## Behavior
+
+When `swarm_handoff.sh` returns `AUDIT_REQUIRED`, direct the agent to:
+
+1. Re-read the complete inbound task payload and every source it references.
+2. Compare the completed work product against every requirement and constraint
+   in that material, including interactions, boundaries, failure cases, and
+   negative requirements.
+3. Establish requirement-to-evidence traceability using evidence appropriate
+   to the agent's assigned responsibilities. Every requirement must be covered
+   by the resulting work, supported by relevant verification, or identified as
+   a gap.
+4. Review the complete committed diff, tests and checks, generated artifacts,
+   and unrelated working-tree changes. Passing tools or clean formatting alone
+   are not evidence that the task is complete.
+5. Fix every finding, commit the corrections, rerun the applicable checks, and
+   repeat the audit against the revised candidate before resubmitting.
+
+Keep this language generic so the same directive applies to every agent and
+lets each role select the work products and verification evidence appropriate
+to its responsibilities. The tool still cannot prove that the review was
+thoughtful, but it must state the semantic standard explicitly rather than
+inviting a narrow mechanical audit.
+
+## Verification
+
+Verify behavior through the stable audit protocol: the first Git handoff call
+must return `AUDIT_REQUIRED` without queueing, and a changed candidate must
+require another audit. Do not pin or search for the directive's prose in an
+automated test.
