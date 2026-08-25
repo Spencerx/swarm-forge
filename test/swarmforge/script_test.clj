@@ -458,6 +458,32 @@
         (fs/delete-tree root)
         (fs/delete-tree home)))))
 
+(deftest swarmforge-trust-does-not-duplicate-existing-config
+  ;; Given a config.toml that already has another project table
+  ;; When startup trusts a new worktree
+  ;; Then the old table appears once and the new path appears once
+  (let [root (tmp-dir)
+        home (fs/create-temp-dir {:prefix "codex-home."})
+        wt (str (fs/absolutize root))
+        other "[projects.\"/other\"]\ntrust_level = \"trusted\"\n"]
+    (try
+      (write-file (fs/path home "config.toml") (str "model = \"gpt-5.5\"\n\n" other))
+      (run {:dir root :env {"CODEX_HOME" (str home)
+                            "PATH" (System/getenv "PATH")
+                            "GIT_CONFIG_NOSYSTEM" "1"}}
+           (script "swarmforge.bb")
+           "--test-ensure-codex-trust"
+           wt)
+      (let [cfg (slurp (str (fs/path home "config.toml")))]
+        (is (= 1 (count (re-seq #"model = \"gpt-5.5\"" cfg))))
+        (is (= 1 (count (re-seq #"\[projects\.\"/other\"\]" cfg))))
+        (is (= 1 (count (re-seq (re-pattern (java.util.regex.Pattern/quote
+                                             (str "[projects." (pr-str wt) "]")))
+                                cfg)))))
+      (finally
+        (fs/delete-tree root)
+        (fs/delete-tree home)))))
+
 (deftest swarm-tool-knows-constitution-tool-names
   ;; Given a pack project
   ;; When require runs for clj-mutate

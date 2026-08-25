@@ -503,6 +503,12 @@
 (defn project-table-header [dir]
   (str "[projects." (pr-str (str (fs/absolutize dir))) "]"))
 
+(defn ensure-newline [text]
+  (cond
+    (str/blank? text) ""
+    (str/ends-with? text "\n") text
+    :else (str text "\n")))
+
 (defn ensure-codex-trust! [dir]
   (when-not (str/blank? (str dir))
     (let [home (codex-home)
@@ -512,9 +518,8 @@
       (when-not (str/includes? text header)
         (fs/create-dirs home)
         (spit (str cfg)
-              (str (if (or (str/blank? text) (str/ends-with? text "\n")) text (str text "\n"))
-                   "\n" header "\ntrust_level = \"trusted\"\n")
-              :append true)))))
+              (str (ensure-newline text)
+                   "\n" header "\ntrust_level = \"trusted\"\n"))))))
 
 (defn launch-role! [ctx index row]
   (when (= "codex" (:agent row))
