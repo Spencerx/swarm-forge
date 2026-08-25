@@ -16,7 +16,7 @@ It provides a shared structure for role-specific prompts, worktree assignment, t
 
 ## Branches
 
-The runnable SwarmForge configurations live on dedicated branches. Each branch contains the `swarmforge/swarmforge.conf`, local constitution articles, and role prompts for one workflow. At startup, its `./swarm` wrapper copies the shared operational scripts and shared constitution articles from `main` when they are not already present, then launches that branch's local configuration.
+The runnable SwarmForge configurations live on dedicated branches. Each branch contains the `swarmforge/swarmforge.conf`, local constitution articles, and role prompts for one workflow. Use the `get-swarm-forge` helper to compose a runnable branch with the shared operational scripts and shared constitution articles from `main`.
 
 ### `two-pack`
 
@@ -80,14 +80,24 @@ SwarmForge runs locally. Before starting a runnable branch, make sure the target
 
 ## Getting Started
 
-In the directory where you want to use SwarmForge, choose a runnable branch and pull its contents without creating a Git remote:
+Install the `get-swarm-forge` helper somewhere on your `PATH`, such as `~/cmds` or `~/bin`:
 
 ```sh
-BRANCH=four-pack
-curl -L "https://github.com/unclebob/swarm-forge/archive/refs/heads/${BRANCH}.tar.gz" | tar -xz --strip-components=1
+mkdir -p ~/cmds
+cp get-swarm-forge ~/cmds/get-swarm-forge
+chmod +x ~/cmds/get-swarm-forge
 ```
 
-Use `BRANCH=two-pack` for the quick two-agent workflow, `BRANCH=four-pack` for the compact specification workflow, or `BRANCH=six-pack` for the full six-agent workflow. Do not use `main` for this command; `main` is documentary and stores the shared operational scripts, while the runnable branches provide the configurations and prompts intended for projects.
+Make sure that utility directory is on your shell `PATH`, then run the helper in
+the project directory where you want to use SwarmForge:
+
+```sh
+get-swarm-forge four-pack codex --yolo
+```
+
+Use `two-pack` for the quick two-agent workflow, `four-pack` for the compact specification workflow, or `six-pack` for the full six-agent workflow. Do not use `main` here; `main` stores the shared operational scripts and core constitution articles, while the runnable branches provide the configurations and prompts intended for projects.
+
+`get-swarm-forge` downloads `main` first, copies only the shared `swarmforge/scripts/` and core constitution articles, then overlays the requested runnable branch. It fails fast if required scripts, role prompts, or core constitution articles are missing.
 
 After copying a runnable branch, start the swarm from the target project:
 
@@ -95,7 +105,7 @@ After copying a runnable branch, start the swarm from the target project:
 ./swarm
 ```
 
-The `./swarm` wrapper keeps the runnable branch small. On first use, if `swarmforge/scripts/` is missing, it downloads the `main` branch archive, copies the shared operational scripts from `swarmforge/scripts/`, stages shared constitution articles from `swarmforge/constitution/articles/`, and then launches `swarmforge/scripts/swarmforge.sh`. Later runs reuse the existing local scripts directory instead of overwriting it.
+The `./swarm` wrapper launches `swarmforge/scripts/swarmforge.sh` from the composed project-local copy. Rerun `get-swarm-forge <branch>` to refresh shared scripts or switch pack branches.
 
 Startup prints a **Dashboard:** URL (also written to `.swarmforge/dashboard-url`) and opens it in the browser when `open` is available. Pack roles default to `window-invisible`: agents run in tmux, but no Terminal window opens per role. The dashboard is the operator surface.
 

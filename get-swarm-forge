@@ -1,0 +1,116 @@
+#!/bin/zsh
+set -euo pipefail
+
+valid_agents=(claude codex copilot grok)
+default_repo_url="https://github.com/unclebob/swarm-forge"
+
+usage() {
+  echo "usage: get-swarm-forge <branch> [agent] [extra-cli-args...]" >&2
+  echo "  branch: two-pack, four-pack, six-pack, or another runnable pack branch" >&2
+  echo "  agent: ${valid_agents[*]}" >&2
+  echo "  extra-cli-args: appended to each window line after the optional task|batch field" >&2
+}
+
+if [[ -z "${1:-}" ]]; then
+  usage
+  exit 1
+fi
+
+branch="$1"
+shift
+
+agent=""
+extra_args=()
+
+if [[ -n "${1:-}" && " ${valid_agents[*]} " == *" $1 "* ]]; then
+  agent="$1"
+  shift
+fi
+
+extra_args=("$@")
+
+repo_url="${SWARMFORGE_REPO_URL:-$default_repo_url}"
+base_branch="${SWARMFORGE_BASE_BRANCH:-main}"
+tmp_dir="$(mktemp -d)"
+
+cleanup() {
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+download_branch() {
+  local ref="$1"
+  local dest="$2"
+  mkdir -p "$dest"
+  curl -fsSL "${repo_url}/archive/refs/heads/${ref}.tar.gz" | tar -xz --strip-components=1 -C "$dest"
+}
+
+fail_missing() {
+  local path="$1"
+  echo "get-swarm-forge: missing required file after composing swarm: $path" >&2
+  exit 1
+}
+
+base_dir="$tmp_dir/base"
+pack_dir="$tmp_dir/pack"
+
+download_branch "$base_branch" "$base_dir"
+download_branch "$branch" "$pack_dir"
+
+[[ -d "$base_dir/swarmforge/scripts" ]] || fail_missing "swarmforge/scripts from $base_branch"
+[[ -d "$base_dir/swarmforge/constitution/articles" ]] || fail_missing "swarmforge/constitution/articles from $base_branch"
+[[ -f "$pack_dir/swarm" ]] || fail_missing "swarm from $branch"
+[[ -f "$pack_dir/swarmforge/swarmforge.conf" ]] || fail_missing "swarmforge/swarmforge.conf from $branch"
+[[ -d "$pack_dir/swarmforge/roles" ]] || fail_missing "swarmforge/roles from $branch"
+
+rm -rf swarmforge .worktrees .swarmforge
+
+mkdir -p swarmforge
+cp -R "$base_dir/swarmforge/scripts" swarmforge/scripts
+mkdir -p swarmforge/constitution
+cp -R "$base_dir/swarmforge/constitution/articles" swarmforge/constitution/articles
+
+cp -R "$pack_dir"/. .
+
+required_files=(
+  swarm
+  swarmforge/swarmforge.conf
+  swarmforge/constitution.prompt
+  swarmforge/constitution/articles/handoffs.prompt
+  swarmforge/constitution/articles/workflow.prompt
+  swarmforge/constitution/articles/engineering.prompt
+  swarmforge/scripts/swarmforge.sh
+  swarmforge/scripts/handoffd.bb
+  swarmforge/scripts/done_with_current.sh
+)
+
+for path in "${required_files[@]}"; do
+  [[ -e "$path" ]] || fail_missing "$path"
+done
+
+while IFS= read -r role; do
+  [[ -f "swarmforge/roles/${role}.prompt" ]] || fail_missing "swarmforge/roles/${role}.prompt"
+done < <(awk '/^window/ { print $2 }' swarmforge/swarmforge.conf)
+
+chmod +x swarm
+
+if [[ ( -n "$agent" || ${#extra_args[@]} -gt 0 ) && -f swarmforge/swarmforge.conf ]]; then
+  extra_args_str="${(j: :)extra_args}"
+  awk -v agent="$agent" -v extra_args="$extra_args_str" '
+    /^window/ {
+      if (agent != "") $3 = agent
+      if (extra_args != "") {
+        printf "%s", $1
+        for (i = 2; i <= NF; i++) printf " %s", $i
+        printf " %s\n", extra_args
+        next
+      }
+      print
+      next
+    }
+    { print }
+  ' swarmforge/swarmforge.conf > swarmforge/swarmforge.conf.tmp \
+    && mv swarmforge/swarmforge.conf.tmp swarmforge/swarmforge.conf
+fi
+
+echo "SwarmForge ${branch} installed. Run ./swarm to start."
