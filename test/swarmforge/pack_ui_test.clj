@@ -302,8 +302,12 @@
     (is (= "specifier" (:master_role state)))
     (is (= "Specifier" (:master_display state)))
     (is (= six-pack-roles (:lanes state)))
-    (is (= [{:name "htw-console-app" :lane "specifier" :updated_at updated :status ""}]
-           (:tasks state)))
+    (let [card (first (:tasks state))]
+      (is (= "htw-console-app" (:name card)))
+      (is (str/starts-with? (:id card) "20"))
+      (is (= "specifier" (:lane card)))
+      (is (= updated (:updated_at card)))
+      (is (= "" (:status card))))
     (is (= [] (:approvals state)))
     (is (= six-pack-roles (mapv :role (:work_in_flight state))))))
 
@@ -400,8 +404,9 @@
         (is (= "specifier" (task-lane root "htw-console-app")))
         (is (= [{:id "50_from_specifier_to_coder"
                  :gate "spec → coder"
+                 :task_id "htw-console-app"
                  :task "htw-console-app"
-                 :artifacts ["features/console.feature" "qa/console.md"]}]
+                 :artifacts []}]
                (:approvals state))))
       (finally
         (stop-tmux! sock)))))
@@ -645,6 +650,47 @@
         (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
       (finally
         (stop-tmux! sock)))))
+
+(deftest attention-reject-preserves-branch-and-rolls-back-head
+  ;; Given a pending approval with task identity and a task base commit
+  ;; When it is rejected
+  ;; Then rejected work is preserved off the active branch and pending state is cleared
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (setup-pack! root six-pack-roles)
+    (write-file (fs/path root "story.md") "base\n")
+    (run {:dir root} "git" "add" "story.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Base")
+    (create-task root "htw-console-app" "specifier")
+    (let [task-id (:id (first (:tasks (web-state root))))
+          base (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-file (fs/path root "story.md") "rejected\n")
+      (run {:dir root} "git" "add" "story.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Rejected work")
+      (let [rejected (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")]
+        (write-file pending
+                    (str "from: specifier\n"
+                         "to: coder\n"
+                         "priority: 50\n"
+                         "type: git_handoff\n"
+                         "task_id: " task-id "\n"
+                         "task: htw-console-app\n"
+                         "commit: " rejected "\n"
+                         "task_base_commit: " base "\n"
+                         "\n"
+                         "payload\n"))
+        (let [result (pack-web root false "--test-reject" (str root) "50_from_specifier_to_coder")
+              head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+              branches (:out (run {:dir root} "git" "branch" "--format=%(refname:short)"))]
+          (is (zero? (:exit result)))
+          (is (= base head))
+          (is (str/includes? branches (str "rejected-" (str/lower-case task-id) "-")))
+          (is (not (fs/exists? pending)))
+          (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks" task-id)))
+          (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))))))
 
 (deftest pack-dashboard-renders-attention-approvals
   ;; Given dashboard HTML
@@ -1355,7 +1401,7 @@
 (deftest pack-web-waiting-cards-say-waiting-in-queue
   ;; Given two specifier cards and a pane I'm sentence
   ;; When --test-status-pane
-  ;; Then the first card has that sentence and the other says waiting in queue
+  ;; Then both cards say waiting in queue because no in-process handoff selects one
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
@@ -1365,7 +1411,7 @@
         state (json/parse-string (:out result) true)
         by-name (into {} (map (juxt :name identity) (:tasks state)))]
     (is (zero? (:exit result)))
-    (is (str/includes? (str (:status (get by-name "HTW"))) "I'm specifying HTW"))
+    (is (= "waiting in queue" (:status (get by-name "HTW"))))
     (is (= "waiting in queue" (:status (get by-name "Holy Hand Grenade"))))))
 
 (deftest pack-web-in-process-card-gets-pane-status

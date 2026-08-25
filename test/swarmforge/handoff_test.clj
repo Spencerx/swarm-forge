@@ -69,16 +69,18 @@
                      role root (str/capitalize role) mode))))))
 
 (defn handoff
-  [{:keys [id from to recipient priority type task commit body
-           enqueued-at dequeued-at completed-at]}]
+  [{:keys [id from to recipient priority type task-id task commit body
+           task-base-commit enqueued-at dequeued-at completed-at]}]
   (str "id: " id "\n"
        "from: " from "\n"
        "to: " to "\n"
        (when recipient (str "recipient: " recipient "\n"))
        "priority: " priority "\n"
        "type: " type "\n"
+       (when task-id (str "task_id: " task-id "\n"))
        (when task (str "task: " task "\n"))
        (when commit (str "commit: " commit "\n"))
+       (when task-base-commit (str "task_base_commit: " task-base-commit "\n"))
        (when enqueued-at (str "enqueued_at: " enqueued-at "\n"))
        (when dequeued-at (str "dequeued_at: " dequeued-at "\n"))
        (when completed-at (str "completed_at: " completed-at "\n"))
@@ -266,6 +268,32 @@
           (is (fs/exists? queued))
           (is (not (fs/exists? draft))))))))
 
+(deftest swarm-handoff-uses-hidden-task-id
+  ;; Given a sender has a current hidden task id
+  ;; When a draft names a different task id
+  ;; Then the handoff is rejected before it can become active stale work
+  (let [root (tmp-dir)
+        commit (init-repo! root)]
+    (setup-project! root)
+    (write-file (fs/path root ".swarmforge/board/tasks.tsv")
+                "Visible Task\tsender\tcreated\tupdated\t20260825T120000000000Z-visible-task\n")
+    (put-handoff! root "in_process" "50_current.handoff"
+                  {:id "current"
+                   :from "master"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id "20260825T120000000000Z-visible-task"
+                   :task "Visible Task"})
+    (let [draft (fs/path root "tmp" "stale.handoff")]
+      (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask_id: old-task-id\ntask: Visible Task\ncommit: %s\n" commit))
+      (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                        (script "swarm_handoff.sh") (str draft))]
+        (is (= 2 (:exit result)))
+        (is (str/includes? (:err result) "does not match current in-process task_id"))
+        (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")))))))
+
 (deftest ready-for-next-prints-note-task-name-and-body
   ;; Given a (New Task) note in the receiver inbox
   ;; When ready_for_next runs
@@ -444,6 +472,31 @@
       (is (zero? (:exit result)))
       (is (str/includes? content "artifacts: slice.md\n"))
       (is (not (str/includes? content "artifacts: none"))))))
+
+(deftest swarm-handoff-excludes-deleted-artifacts
+  ;; Given a commit deletes one file and changes another
+  ;; When it is queued
+  ;; Then the deleted file is not listed as an approval document
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "keep.md") "before\n")
+        _ (write-file (fs/path root "gone.md") "delete me\n")
+        _ (run {:dir root} "git" "add" "keep.md" "gone.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add docs")
+        _ (write-file (fs/path root "keep.md") "after\n")
+        _ (fs/delete (fs/path root "gone.md"))
+        _ (run {:dir root} "git" "add" "keep.md" "gone.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Update docs")
+        draft (fs/path root "tmp" "deleted-artifact.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: docs\n")
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (read-file queued)]
+      (is (zero? (:exit result)))
+      (is (str/includes? content "artifacts: keep.md\n"))
+      (is (not (str/includes? content "gone.md"))))))
 
 (deftest swarm-handoff-refuses-a-merge-with-no-changed-files
   ;; Given HEAD is a merge whose first-parent diff is empty

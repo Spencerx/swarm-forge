@@ -124,13 +124,16 @@
     (fs/move tmp file {:replace-existing true})))
 
 (defn print-task [file]
-  (let [task-name (header-field file "task")]
+  (let [task-name (header-field file "task")
+        task-id (header-field file "task_id")]
     (println "TASK:" (str file))
     (println "FROM:" (or (header-field file "from") "unknown"))
     (println "TYPE:" (or (header-field file "type") "unknown"))
     (println "PRIORITY:" (or (header-field file "priority") "50"))
     (when task-name
       (println "TASK_NAME:" task-name))
+    (when task-id
+      (println "TASK_ID:" task-id))
     (println "PAYLOAD:")
     (print (body file))))
 

@@ -15,6 +15,7 @@
        "type: git_handoff\n"
        "to: <role>[,<role>...]\n"
        "priority: NN\n"
+       "task_id: <hidden-task-id>\n"
        "task: <short-stable-task-name>\n\n"
        "The helper fills priority 50, commit, and artifacts from the sender worktree HEAD.\n"
        "Do not type a SHA. Extra headers (coverage, CRAP) are invalid.\n"
@@ -25,8 +26,8 @@
        "message: <one line, max 80 chars>"))
 
 (def reserved-fields #{"id" "from" "role" "recipient" "created_at" "enqueued_at"
-                       "dequeued_at" "completed_at" "non-forwarding"})
-(def allowed-fields #{"type" "to" "priority" "task" "commit" "message"})
+                       "dequeued_at" "completed_at" "task_base_commit" "non-forwarding"})
+(def allowed-fields #{"type" "to" "priority" "task_id" "task" "commit" "message"})
 (def allowed-types #{"git_handoff" "note"})
 
 (defn usage []
@@ -102,8 +103,9 @@
     (if (fs/exists? file)
       (into []
             (keep (fn [line]
-                    (let [[name task-lane] (str/split line #"\t")]
-                      (when (= lane task-lane) name))))
+                    (let [[name task-lane _created _updated task-id] (str/split line #"\t" -1)]
+                      (when (= lane task-lane)
+                        {:name name :id (or (not-empty task-id) name)}))))
             (str/split-lines (slurp (str file))))
       [])))
 
@@ -133,25 +135,55 @@
               (subs line (count prefix))))
           (take-while (complement str/blank?) (str/split-lines (slurp (str file)))))))
 
+(defn handoff-task-id [file]
+  (or (not-empty (header-field file "task_id"))
+      (header-field file "task")))
+
 (defn top-batch-task []
   (let [batches (batch-dirs (in-process-dir))]
     (when (= 1 (count batches))
       (when-let [file (first (handoff-files (first batches)))]
         (header-field file "task")))))
 
+(defn top-batch-task-id []
+  (let [batches (batch-dirs (in-process-dir))]
+    (when (= 1 (count batches))
+      (when-let [file (first (handoff-files (first batches)))]
+        (handoff-task-id file)))))
+
+(defn in-process-task-files []
+  (into (handoff-files (in-process-dir))
+        (mapcat handoff-files (batch-dirs (in-process-dir)))))
+
+(defn current-in-process-task-id []
+  (when-let [file (first (in-process-task-files))]
+    (handoff-task-id file)))
+
+(defn current-task-base []
+  (when-let [file (first (in-process-task-files))]
+    (header-field file "task_base_commit")))
+
 (defn with-lane-task [headers sender]
   (let [cards (board-cards-in-lane sender)
+        drafted-id (get headers "task_id")
         drafted (get headers "task")]
     (cond
-      (some #{drafted} cards) headers
-      (= 1 (count cards)) (assoc headers "task" (first cards))
+      (some #(= drafted-id (:id %)) cards) headers
+      (not (str/blank? drafted-id)) headers
+      (some #(= drafted (:name %)) cards)
+      (let [card (first (filter #(= drafted (:name %)) cards))]
+        (assoc headers "task_id" (:id card) "task" (:name card)))
+      (= 1 (count cards))
+      (let [card (first cards)]
+        (assoc headers "task_id" (:id card) "task" (:name card)))
       :else headers)))
 
 (defn with-board-task [headers sender]
   (if-not (= "git_handoff" (get headers "type"))
     headers
-    (if-let [batch-task (not-empty (top-batch-task))]
-      (assoc headers "task" batch-task)
+    (if-let [batch-task-id (not-empty (top-batch-task-id))]
+      (cond-> (assoc headers "task_id" batch-task-id)
+        (not-empty (top-batch-task)) (assoc "task" (top-batch-task)))
       (with-lane-task headers sender))))
 
 (defn pack-role-names []
@@ -170,9 +202,7 @@
     headers))
 
 (defn inbound-handoffs []
-  (let [dir (in-process-dir)]
-    (into (handoff-files dir)
-          (mapcat handoff-files (batch-dirs dir)))))
+  (in-process-task-files))
 
 (defn inbound-non-forwarding? []
   (boolean (some #(= "true" (header-field % "non-forwarding"))
@@ -213,6 +243,9 @@
 (defn commit-on-sender-branch? [sha]
   (zero? (:exit (command (git-cwd) "git" "merge-base" "--is-ancestor" sha "HEAD"))))
 
+(defn commit-descends-from? [base sha]
+  (zero? (:exit (command (git-cwd) "git" "merge-base" "--is-ancestor" base sha))))
+
 (defn named-files [result]
   (->> (:out result)
        str/split-lines
@@ -221,11 +254,11 @@
        vec))
 
 (defn commit-artifacts [sha]
-  (let [against-parent (command (git-cwd) "git" "diff" "--name-only" (str sha "^") sha)]
+  (let [against-parent (command (git-cwd) "git" "diff" "--name-only" "--diff-filter=ACMRT" (str sha "^") sha)]
     (if (zero? (:exit against-parent))
       (named-files against-parent)
       (named-files (command (git-cwd) "git" "diff-tree" "--root"
-                            "--no-commit-id" "--name-only" "-r" sha)))))
+                            "--no-commit-id" "--name-only" "--diff-filter=ACMRT" "-r" sha)))))
 
 (defn state-dir []
   (fs/path (project-root) ".swarmforge" "handoffs"))
@@ -251,12 +284,128 @@
     headers
     (assoc headers "priority" "50")))
 
+(defn fill-task-id [headers]
+  (if (and (= "git_handoff" (get headers "type"))
+           (str/blank? (get headers "task_id"))
+           (not (str/blank? (get headers "task"))))
+    (assoc headers "task_id" (get headers "task"))
+    headers))
+
 (defn prepare-headers [headers sender]
   (-> headers
       fill-commit
       (with-board-task sender)
+      fill-task-id
       (with-non-forwarding sender)
       fill-priority))
+
+(defn state-root []
+  (fs/path (project-root) ".swarmforge"))
+
+(defn board-rows []
+  (let [file (fs/path (state-root) "board" "tasks.tsv")]
+    (if (fs/exists? file)
+      (->> (str/split-lines (slurp (str file)))
+           (remove str/blank?)
+           (map #(let [[name lane _created _updated task-id] (str/split % #"\t" -1)]
+                   {:name name :lane lane :id (or (not-empty task-id) name)}))
+           vec)
+      [])))
+
+(defn board-present? []
+  (fs/exists? (fs/path (state-root) "board" "tasks.tsv")))
+
+(defn board-task [task-id]
+  (some #(when (= task-id (:id %)) %) (board-rows)))
+
+(defn rejected-task? [task]
+  (let [name (:name task)]
+    (and (not (str/blank? name))
+         (fs/exists? (fs/path (state-root) "notify" (str "reject-" name))))))
+
+(defn task-state-errors [headers sender]
+  (if-not (= "git_handoff" (get headers "type"))
+    []
+    (let [task-id (or (not-empty (get headers "task_id"))
+                      (get headers "task"))
+          in-process-id (current-in-process-task-id)
+          task (board-task task-id)]
+      (cond-> []
+        (str/blank? task-id)
+        (conj "Missing required header 'task_id' for git_handoff.")
+        (and in-process-id (not= task-id in-process-id))
+        (conj (format "Handoff task_id '%s' does not match current in-process task_id '%s'."
+                      task-id in-process-id))
+        (and (board-present?) (nil? in-process-id) (not task))
+        (conj (format "Handoff task_id '%s' is not a current board task." task-id))
+        (and task (= "done" (:lane task)))
+        (conj (format "Task '%s' is done and cannot accept new handoffs." (:name task)))
+        (rejected-task? task)
+        (conj (format "Task '%s' is rejected and must be retried before handoff." (:name task)))))))
+
+(def active-states
+  [["pending approvals" (fn [] [(fs/path (state-dir) "pending_approval")])]
+   ["sent" (fn []
+             (concat [(fs/path (state-dir) "sent")]
+                     (for [line (str/split-lines (slurp (str (roles-file))))
+                           :let [cols (str/split line #"\t" -1)
+                                 wt (nth cols 2 nil)]
+                           :when (not (str/blank? wt))]
+                       (fs/path wt ".swarmforge" "handoffs" "sent"))))]
+   ["recipient inbox" (fn []
+                        (for [line (str/split-lines (slurp (str (roles-file))))
+                              :let [cols (str/split line #"\t" -1)
+                                    wt (nth cols 2 nil)]
+                              :when (not (str/blank? wt))
+                              state ["new" "in_process"]]
+                          (fs/path wt ".swarmforge" "handoffs" "inbox" state)))]] )
+
+(defn recursive-handoff-files [dir]
+  (if (fs/directory? dir)
+    (->> (fs/glob dir "**/*.handoff")
+         (filter fs/regular-file?)
+         vec)
+    []))
+
+(defn header-map [file]
+  (into {}
+        (for [line (take-while (complement str/blank?) (str/split-lines (slurp (str file))))
+              :let [[k v] (str/split line #": " 2)]
+              :when (and k v)]
+          [k v])))
+
+(defn same-active-handoff? [sender recipients headers canonical-commit path]
+  (let [h (header-map path)
+        task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+        other-id (or (not-empty (get h "task_id")) (get h "task"))]
+    (and (= sender (get h "from"))
+         (= (set recipients) (set (str/split (or (get h "to") "") #",")))
+         (= task-id other-id)
+         (= canonical-commit (get h "commit")))))
+
+(defn duplicate-errors [sender recipients headers canonical-commit]
+  (if-not (= "git_handoff" (get headers "type"))
+    []
+    (let [matches (for [[label dirs-fn] active-states
+                        dir (dirs-fn)
+                        file (recursive-handoff-files dir)
+                        :when (same-active-handoff? sender recipients headers canonical-commit file)]
+                    (str label ": " file))]
+      (if (seq matches)
+        [(str "Duplicate active handoff for same from/to/task_id/commit exists: "
+              (str/join ", " matches))]
+        []))))
+
+(defn ancestry-errors [headers canonical-commit]
+  (if-not (= "git_handoff" (get headers "type"))
+    []
+    (let [base (current-task-base)]
+      (cond-> []
+        (and (not (str/blank? base))
+             (not (str/blank? canonical-commit))
+             (not (commit-descends-from? base canonical-commit)))
+        (conj (format "Result commit %s is not a descendant of task base %s."
+                      canonical-commit base))))))
 
 (defn ensure-field [ordered field]
   (if (some #{field} ordered)
@@ -348,6 +497,7 @@
                                           ["git_handoff" "type"] true
                                           ["git_handoff" "to"] true
                                           ["git_handoff" "priority"] true
+                                          ["git_handoff" "task_id"] true
                                           ["git_handoff" "task"] true
                                           ["git_handoff" "commit"] true
                                           ["note" "type"] true
@@ -376,6 +526,8 @@
         git-errors (cond-> []
                      (= "git_handoff" type)
                      (into (cond-> []
+                             (str/blank? (get headers "task_id"))
+                             (conj "Missing required header 'task_id' for git_handoff.")
                              (str/blank? task-name)
                              (conj "Missing required header 'task' for git_handoff.")
                              (> (count (or task-name "")) 80)
@@ -453,9 +605,12 @@
                        (str "type: " type)]
                 (= "git_handoff" type)
                 (conj (str "role: " sender)
+                      (str "task_id: " (get headers "task_id"))
                       (str "task: " (get headers "task"))
                       (str "commit: " canonical-commit)
                       (str "artifacts: " artifacts))
+                (and (= "git_handoff" type) (not (str/blank? (current-task-base))))
+                (conj (str "task_base_commit: " (current-task-base)))
                 (= "true" (get headers "non-forwarding"))
                 (conj "non-forwarding: true")
                 (= "note" type)
@@ -511,7 +666,14 @@
                    (not (commit-on-sender-branch? sha)))
           (exit! 1 (str "Result commit " sha " is not reachable from sender worktree")))
         (let [validation (validate headers ordered)
-              all-errors (vec (concat errors (:errors validation)))]
+              all-errors (vec (concat errors
+                                      (:errors validation)
+                                      (task-state-errors headers sender)
+                                      (ancestry-errors headers (:canonical-commit validation))
+                                      (duplicate-errors sender
+                                                        (:recipients validation)
+                                                        headers
+                                                        (:canonical-commit validation))))]
           (when (seq all-errors)
             (error-report draft all-errors)
             (System/exit 2))

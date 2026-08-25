@@ -22,7 +22,7 @@
        "  pack_board.sh delete --name <name> [--root <dir>]\n"
        "  pack_board.sh delete <name>"))
 
-(def flags {"--root" :root "--name" :name "--lane" :lane "--text" :text "--role" :role})
+(def flags {"--root" :root "--name" :name "--lane" :lane "--text" :text "--role" :role "--task-id" :task-id})
 
 (defn usage []
   (binding [*out* *err*]
@@ -98,6 +98,20 @@
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
            (java.time.Instant/now)))
 
+(defn id-timestamp []
+  (.format (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmssSSSSSS'Z'")
+           (.atZone (java.time.Instant/now) java.time.ZoneOffset/UTC)))
+
+(defn slug [s]
+  (let [slugged (-> (or s "")
+                    str/lower-case
+                    (str/replace #"[^a-z0-9]+" "-")
+                    (str/replace #"(^-+|-+$)" ""))]
+    (if (str/blank? slugged) "task" slugged)))
+
+(defn new-task-id [name]
+  (str (id-timestamp) "-" (slug name)))
+
 (defn read-rows [file]
   (if (fs/exists? file)
     (->> (str/split-lines (slurp (str file)))
@@ -119,8 +133,11 @@
   (let [want (str/lower-case (or name ""))]
     (some #(when (= want (str/lower-case (or (row-name %) ""))) %) rows)))
 
-(defn task-row [name lane now]
-  (str/join "\t" [name lane now now]))
+(defn task-row
+  ([name lane now]
+   (task-row name lane now (new-task-id name)))
+  ([name lane now task-id]
+   (str/join "\t" [name lane now now task-id])))
 
 (defn task-name [opts]
   (or (:name opts) (second (:positional opts))))
@@ -142,13 +159,14 @@
     (let [rows (read-rows file)]
       (when (find-task rows name)
         (exit! 1 (str "Duplicate task name: " name)))
-      (write-rows file (conj rows (task-row name lane (timestamp))))
+      (write-rows file (conj rows (task-row name lane (timestamp) (or (:task-id opts) (new-task-id name)))))
       (write-body! root name (:text opts)))))
 
 (defn rewrite-lane [line name lane]
-  (let [[row-name _ created] (str/split line #"\t")]
+  (let [[row-name _ created _updated task-id] (str/split line #"\t" -1)]
     (if (= (str/lower-case (or name "")) (str/lower-case (or row-name "")))
-      (str/join "\t" [row-name lane created (timestamp)])
+      (str/join "\t" (cond-> [row-name lane created (timestamp)]
+                       (not (str/blank? task-id)) (conj task-id)))
       line)))
 
 (defn set-lane! [opts lane]

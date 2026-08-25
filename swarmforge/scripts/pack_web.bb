@@ -51,7 +51,7 @@
 
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name
          in-process-for-row in-process-task-names approvals
-         handoff-files batch-dirs in-process-dir)
+         handoff-files batch-dirs in-process-dir allowed-doc?)
 
 (defn usage []
   (binding [*out* *err*]
@@ -158,8 +158,11 @@
   (str/trim (pack-board root "master-lane")))
 
 (defn task-entry [line]
-  (let [[name lane _created updated] (str/split line #"\t")]
-    {:name name :lane lane :updated_at updated}))
+  (let [[name lane _created updated task-id] (str/split line #"\t" -1)]
+    {:name name
+     :id (or (not-empty task-id) name)
+     :lane lane
+     :updated_at updated}))
 
 (defn last-n-lines [text n]
   (vec (take-last n (str/split-lines (or text "")))))
@@ -217,15 +220,22 @@
 
 (defn active-card-names [root role]
   (let [row (role-row root role)
-        names (when row (in-process-task-names (in-process-for-row row)))]
+        names (when row (in-process-task-names (in-process-for-row row)))
+        cards (filter #(= role (:lane %)) (board-tasks root))]
     (if (seq names)
       (set names)
-      (if-let [card (first (filter #(= role (:lane %)) (board-tasks root)))]
-        #{(:name card)}
+      (if (= 1 (count cards))
+        #{(:name (first cards))}
         #{}))))
 
 (defn rejected-task? [root name]
   (fs/exists? (fs/path root ".swarmforge" "notify" (str "reject-" name))))
+
+(defn pending-approval-ids [root]
+  (->> (approvals root)
+       (map :task_id)
+       (remove str/blank?)
+       set))
 
 (defn pending-approval-names [root]
   (->> (approvals root)
@@ -235,12 +245,14 @@
 
 (defn task-with-status [root task]
   (let [role (:lane task)
-        name (:name task)]
+        name (:name task)
+        task-id (:id task)]
     (assoc task :status
            (cond
              (= "done" role) ""
              (rejected-task? root name) "REJECTED"
-             (contains? (pending-approval-names root) name) "Waiting for approval"
+             (or (contains? (pending-approval-ids root) task-id)
+                 (contains? (pending-approval-names root) name)) "Waiting for approval"
              (contains? (active-card-names root role) name)
              (pane-status-for root role)
              :else "waiting in queue"))))
@@ -315,8 +327,10 @@
         to (first (comma-list (get headers "to")))]
     {:id (approval-id path)
      :gate (str "spec → " to)
+     :task_id (or (not-empty (get headers "task_id")) (get headers "task"))
      :task (get headers "task")
-     :artifacts (comma-list (get headers "artifacts"))}))
+     :artifacts (filterv #(allowed-doc? (fs/parent (fs/parent (fs/parent (fs/parent path)))) %)
+                          (comma-list (get headers "artifacts")))}))
 
 (defn approvals [root]
   (mapv approval-entry (pending-files root)))
@@ -571,7 +585,21 @@
 (defn slug [s]
   (str/replace (or s "") #"[^A-Za-z0-9]+" "_"))
 
-(defn queue-new-task-note! [root name text]
+(defn id-timestamp []
+  (.format (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmssSSSSSS'Z'")
+           (.atZone (java.time.Instant/now) java.time.ZoneOffset/UTC)))
+
+(defn id-slug [s]
+  (let [slugged (-> (or s "")
+                    str/lower-case
+                    (str/replace #"[^a-z0-9]+" "-")
+                    (str/replace #"(^-+|-+$)" ""))]
+    (if (str/blank? slugged) "task" slugged)))
+
+(defn new-task-id [name]
+  (str (id-timestamp) "-" (id-slug name)))
+
+(defn queue-new-task-note! [root task-id name text]
   (let [to (master-role root)
         now (.format java.time.format.DateTimeFormatter/ISO_INSTANT
                      (java.time.Instant/now))
@@ -587,6 +615,7 @@
                "to: " to "\n"
                "priority: 50\n"
                "type: note\n"
+               "task_id: " task-id "\n"
                "task: " name "\n"
                "created_at: " now "\n"
                "\n"
@@ -616,41 +645,51 @@
     (vec (fs/glob dir "**/*.handoff"))
     []))
 
-(defn handoff-task [path]
-  (get-in (parse-message path) [:headers "task"]))
+(defn handoff-task-id [path]
+  (let [headers (:headers (parse-message path))]
+    (or (not-empty (get headers "task_id"))
+        (get headers "task"))))
 
-(defn task-handoffs [root name]
+(defn task-handoffs [root task-id & aliases]
   (->> (handoff-dirs root)
        (mapcat glob-handoffs)
-       (filter #(= name (handoff-task %)))
+       (filter #(contains? (set (remove str/blank? (cons task-id aliases)))
+                           (handoff-task-id %)))
        vec))
 
 (defn copy-into [dir path]
   (when (fs/regular-file? path)
     (fs/copy path (fs/path dir (fs/file-name path)) {:replace-existing true})))
 
-(defn archive-rejected! [root name]
-  (let [dir (fs/path root ".swarmforge" "rejected-tasks" name)]
+(defn archive-rejected! [root task-id name]
+  (let [dir (fs/path root ".swarmforge" "rejected-tasks" task-id)]
     (fs/create-dirs dir)
     (copy-into dir (fs/path root ".swarmforge" "board" (str name ".txt")))
     (copy-into dir (fs/path root ".swarmforge" "notify" (str "reject-" name)))
-    (doseq [path (task-handoffs root name)]
+    (doseq [path (task-handoffs root task-id name)]
       (copy-into dir path))))
 
-(defn drop-task-handoffs! [root name]
-  (doseq [path (task-handoffs root name)]
+(defn drop-task-handoffs! [root task-id & aliases]
+  (doseq [path (apply task-handoffs root task-id aliases)]
     (fs/delete-if-exists path)))
 
 (defn reject-notify [root name]
   (fs/path root ".swarmforge" "notify" (str "reject-" name)))
+
+(defn task-by-name [root name]
+  (some #(when (= name (:name %)) %) (board-tasks root)))
+
+(defn task-id-for-name [root name]
+  (or (:id (task-by-name root name)) name))
 
 (defn delete-task! [root name]
   (when (str/blank? name)
     (throw (ex-info "Missing task name" {:http-status 400})))
   (when-not (rejected-task? root name)
     (throw (ex-info (str "Not rejected: " name) {:http-status 400})))
-  (archive-rejected! root name)
-  (drop-task-handoffs! root name)
+  (let [task-id (task-id-for-name root name)]
+    (archive-rejected! root task-id name)
+    (drop-task-handoffs! root task-id name))
   (pack-board root "delete" "--name" name)
   (fs/delete-if-exists (reject-notify root name)))
 
@@ -660,14 +699,15 @@
   (when-not (rejected-task? root name)
     (throw (ex-info (str "Not rejected: " name) {:http-status 400})))
   (let [body (or text "")
+        task-id (task-id-for-name root name)
         file (fs/path root ".swarmforge" "board" (str name ".txt"))]
     (when-not (str/blank? body)
       (spit (str file) (if (str/ends-with? body "\n") body (str body "\n"))))
-    (drop-task-handoffs! root name)
+    (drop-task-handoffs! root task-id name)
     (fs/delete-if-exists (reject-notify root name))
-    (queue-new-task-note! root name (if (str/blank? body)
-                                      (if (fs/regular-file? file) (slurp (str file)) "")
-                                      body))))
+    (queue-new-task-note! root task-id name (if (str/blank? body)
+                                              (if (fs/regular-file? file) (slurp (str file)) "")
+                                              body))))
 
 (defn post-delete-task [root body]
   (let [{:keys [name]} (json/parse-string (or body "{}") true)]
@@ -688,11 +728,13 @@
 (defn create-task! [root name text]
   (when (str/blank? name)
     (throw (ex-info "Missing task name" {:http-status 400})))
+  (let [task-id (new-task-id name)]
   (pack-board root "create"
               "--name" name
               "--lane" (master-role root)
+              "--task-id" task-id
               "--text" (or text ""))
-  (queue-new-task-note! root name (or text "")))
+    (queue-new-task-note! root task-id name (or text ""))))
 
 (defn post-tasks [root body]
   (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
@@ -777,10 +819,40 @@
       (fs/create-dirs (fs/parent path))
       (spit (str path) "rejected\n"))))
 
+(defn git! [root & args]
+  (let [result (apply sh (concat ["git" "-C" (str root)] args))]
+    (when-not (zero? (:exit result))
+      (throw (ex-info (str/trim (str (:err result) "\n" (:out result)))
+                      {:http-status 500})))
+    (str/trim (:out result))))
+
+(defn rejected-branch-name [task-id]
+  (str "rejected-" (id-slug task-id) "-" (id-timestamp)))
+
+(defn commit-parent [root commit]
+  (not-empty (git! root "rev-parse" "--short=10" (str commit "^"))))
+
+(defn rollback-target [root headers]
+  (or (not-empty (get headers "task_base_commit"))
+      (when-let [commit (not-empty (get headers "commit"))]
+        (commit-parent root commit))))
+
+(defn preserve-and-rollback! [root headers]
+  (when-let [commit (not-empty (get headers "commit"))]
+    (let [task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+          branch (rejected-branch-name task-id)]
+      (git! root "branch" branch commit)
+      (when-let [target (rollback-target root headers)]
+        (git! root "reset" "--hard" target)))))
+
 (defn reject! [root id]
   (let [src (require-pending! root id)
-        task (get-in (parse-message src) [:headers "task"])]
-    (fs/delete-if-exists src)
+        headers (:headers (parse-message src))
+        task (get headers "task")
+        task-id (or (not-empty (get headers "task_id")) task)]
+    (archive-rejected! root task-id task)
+    (preserve-and-rollback! root headers)
+    (drop-task-handoffs! root task-id task)
     (write-reject-notify! root task)
     (when-not (str/blank? task)
       (inject-master! root (reject-message task)))))

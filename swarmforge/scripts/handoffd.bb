@@ -70,8 +70,8 @@
      :content content}))
 
 (defn render-message [headers body]
-  (let [preferred ["id" "from" "to" "recipient" "priority" "type" "role" "task" "commit"
-                   "artifacts" "message" "created_at" "enqueued_at" "dequeued_at" "completed_at"]
+  (let [preferred ["id" "from" "to" "recipient" "priority" "type" "role" "task_id" "task" "commit"
+                   "artifacts" "task_base_commit" "message" "created_at" "enqueued_at" "dequeued_at" "completed_at"]
         remaining (->> (keys headers)
                        (remove (set preferred))
                        sort)
@@ -200,40 +200,66 @@
     (into (listed-handoffs dir)
           (mapcat listed-handoffs (listed-batches dir)))))
 
-(defn finished-task-names [role-info]
+(defn task-key [headers]
+  (or (not-empty (get headers "task_id"))
+      (get headers "task")))
+
+(defn finished-task-keys [role-info]
   (if-not role-info
     #{}
     (->> (concat (inbox-handoffs role-info "completed")
                  (inbox-handoffs role-info "in_process"))
-         (map #(get (:headers (parse-message %)) "task"))
+         (map #(task-key (:headers (parse-message %))))
          (remove str/blank?)
          set)))
 
-(defn names-in-lane [lane]
+(defn board-row-key [line]
+  (let [[name _lane _created _updated task-id] (str/split line #"\t" -1)]
+    (or (not-empty task-id) name)))
+
+(defn board-row-name [line]
+  (first (str/split line #"\t" -1)))
+
+(defn keys-in-lane [lane]
   (->> (read-lines (board-file))
        (remove str/blank?)
-       (map #(str/split % #"\t"))
+       (map #(str/split % #"\t" -1))
        (filter #(= lane (second %)))
-       (map first)))
+       (mapcat (fn [cols]
+                 (let [line (str/join "\t" cols)
+                       name (first cols)
+                       key (board-row-key line)]
+                   (distinct [key name]))))))
 
-(defn terminal-task-names [roles headers]
+(defn terminal-task-keys [roles headers]
   (let [from (get headers "from")
-        named (get headers "task")
-        finished (finished-task-names (get roles from))
-        in-lane (set (names-in-lane from))]
+        named (task-key headers)
+        finished (finished-task-keys (get roles from))
+        in-lane (set (keys-in-lane from))]
     (->> (cons named (filter finished in-lane))
          (remove str/blank?)
          distinct
          vec)))
+
+(defn board-name-for-key [task-key]
+  (some (fn [line]
+          (let [name (board-row-name line)]
+            (when (or (= task-key (board-row-key line))
+                      (= task-key name))
+              name)))
+        (read-lines (board-file))))
 
 (defn update-board! [roles headers]
   (when (and (fs/exists? (board-file))
              (= "git_handoff" (get headers "type"))
              (seq (recipient-list headers)))
     (if (terminal-handoff? roles headers)
-      (doseq [name (terminal-task-names roles headers)]
-        (pack-board! "done" "--name" name))
-      (let [task (get headers "task")]
+      (doseq [key (terminal-task-keys roles headers)
+              :let [name (or (board-name-for-key key) (get headers "task"))]]
+        (when-not (str/blank? name)
+          (pack-board! "done" "--name" name)))
+      (let [key (task-key headers)
+            task (or (board-name-for-key key) (get headers "task"))]
         (when-not (str/blank? task)
           (pack-board! "move" "--name" task "--lane" (first (recipient-list headers))))))))
 
