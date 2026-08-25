@@ -254,11 +254,13 @@
        vec))
 
 (defn commit-artifacts [sha]
-  (let [against-parent (command (git-cwd) "git" "diff" "--name-only" "--diff-filter=ACMRT" (str sha "^") sha)]
-    (if (zero? (:exit against-parent))
-      (named-files against-parent)
-      (named-files (command (git-cwd) "git" "diff-tree" "--root"
-                            "--no-commit-id" "--name-only" "--diff-filter=ACMRT" "-r" sha)))))
+  (if-let [base (not-empty (current-task-base))]
+    (named-files (command (git-cwd) "git" "diff" "--name-only" "--diff-filter=ACMRT" base sha))
+    (let [against-parent (command (git-cwd) "git" "diff" "--name-only" "--diff-filter=ACMRT" (str sha "^") sha)]
+      (if (zero? (:exit against-parent))
+        (named-files against-parent)
+        (named-files (command (git-cwd) "git" "diff-tree" "--root"
+                              "--no-commit-id" "--name-only" "--diff-filter=ACMRT" "-r" sha))))))
 
 (defn state-dir []
   (fs/path (project-root) ".swarmforge" "handoffs"))
@@ -362,8 +364,10 @@
 
 (defn recursive-handoff-files [dir]
   (if (fs/directory? dir)
-    (->> (fs/glob dir "**/*.handoff")
+    (->> (concat (fs/glob dir "*.handoff")
+                 (fs/glob dir "**/*.handoff"))
          (filter fs/regular-file?)
+         distinct
          vec)
     []))
 

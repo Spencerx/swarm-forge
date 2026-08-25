@@ -6,6 +6,7 @@
             [clojure.string :as str]))
 
 (def script-dir (fs/parent *file*))
+(load-file (str (fs/path script-dir "ready_for_next_guard.bb")))
 
 (defn state-dir []
   (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs"))
@@ -127,6 +128,9 @@
           (merge-git-handoff! file)
           (print-task file))
         (let [new-files (handoff-files new-dir)]
+          (when-let [active (seq (ready-for-next-guard/active-outbound-git-files
+                                  (ready-for-next-guard/current-role)))]
+            (apply fail! 2 (ready-for-next-guard/wait-message active)))
           (if (empty? new-files)
             (println "NO_TASK")
             (let [source-file (first new-files)

@@ -342,6 +342,93 @@
         (is (str/includes? (:out result) "task-alpha"))
         (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/40_20260615T000002Z_000002_from_sender_to_receiver.handoff")))))))
 
+(deftest ready-for-next-waits-while-outbound-approval-is-active
+  ;; Given sender has an outbound git_handoff pending approval
+  ;; When sender asks for another task
+  ;; Then no new task is dequeued from the inbox
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root)
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "sender\tmaster\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                        root (fs/path root ".worktrees/receiver")))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_pending.handoff")
+                "from: sender\nto: receiver\npriority: 50\ntype: git_handoff\ntask_id: task-one\ntask: task-one\ncommit: 1234567890\n\npayload\n")
+    (put-handoff! root "new" "50_next.handoff"
+                  {:id "next"
+                   :from "(New Task)"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id "task-two"
+                   :task "task-two"
+                   :body "next task"})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "ready_for_next.sh"))]
+      (is (= 2 (:exit result)))
+      (is (str/includes? (:err result) "WAITING_FOR_APPROVAL"))
+      (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/50_next.handoff")))
+      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/inbox/in_process") "*.handoff"))))))
+
+(deftest ready-for-next-waits-while-outbound-handoff-is-in-outbox
+  ;; Given sender has queued a git_handoff that handoffd has not processed yet
+  ;; When sender asks for another task
+  ;; Then sender is still treated as busy
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root)
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "sender\tmaster\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                        root (fs/path root ".worktrees/receiver")))
+    (write-file (fs/path root ".swarmforge/handoffs/outbox/50_outbound.handoff")
+                "from: sender\nto: receiver\npriority: 50\ntype: git_handoff\ntask_id: task-one\ntask: task-one\ncommit: 1234567890\n\npayload\n")
+    (put-handoff! root "new" "50_next.handoff"
+                  {:id "next"
+                   :from "(New Task)"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id "task-two"
+                   :task "task-two"
+                   :body "next task"})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "ready_for_next.sh"))]
+      (is (= 2 (:exit result)))
+      (is (str/includes? (:err result) "WAITING_FOR_APPROVAL"))
+      (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/50_next.handoff")))
+      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/inbox/in_process") "*.handoff"))))))
+
+(deftest ready-for-next-batch-waits-while-outbound-approval-is-active
+  ;; Given a batch-mode sender has an outbound git_handoff pending approval
+  ;; When sender asks for the next batch
+  ;; Then no batch is created from queued inbox work
+  (let [root (tmp-dir)]
+    (init-repo! root)
+    (setup-project! root {"sender" "batch" "receiver" "task"})
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "sender\tmaster\t%s\tsession\tSender\tcodex\tbatch\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                        root (fs/path root ".worktrees/receiver")))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_pending.handoff")
+                "from: sender\nto: receiver\npriority: 50\ntype: git_handoff\ntask_id: task-one\ntask: task-one\ncommit: 1234567890\n\npayload\n")
+    (put-handoff! root "new" "50_next.handoff"
+                  {:id "next"
+                   :from "(New Task)"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id "task-two"
+                   :task "task-two"
+                   :body "next task"})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "ready_for_next.sh"))]
+      (is (= 2 (:exit result)))
+      (is (str/includes? (:err result) "WAITING_FOR_APPROVAL"))
+      (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/50_next.handoff")))
+      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/inbox/in_process") "batch_*"))))))
+
 (deftest ready-for-next-batch-groups-equal-priority-handoffs
   (let [root (tmp-dir)]
     (init-repo! root)
@@ -497,6 +584,51 @@
       (is (zero? (:exit result)))
       (is (str/includes? content "artifacts: keep.md\n"))
       (is (not (str/includes? content "gone.md"))))))
+
+(deftest swarm-handoff-uses-task-base-for-merge-artifacts
+  ;; Given HEAD is a merge whose first-parent diff is unrelated to the current task
+  ;; When a git_handoff is queued from an in-process task with a base commit
+  ;; Then artifacts come from task_base_commit..HEAD, not HEAD^..HEAD
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        base (head-sha root)
+        _ (write-file (fs/path root ".swarmforge/board/tasks.tsv")
+                      "extras\tsender\tcreated\tupdated\textras-id\n")
+        _ (run {:dir root} "git" "checkout" "-q" "-b" "jump")
+        _ (write-file (fs/path root "features/console/wumpus_jump.feature") "jump\n")
+        _ (run {:dir root} "git" "add" "features/console/wumpus_jump.feature")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Jump spec")
+        jump (head-sha root)
+        _ (run {:dir root} "git" "checkout" "-q" "master")
+        _ (write-file (fs/path root "features/console/command_extras.feature") "commands\n")
+        _ (write-file (fs/path root "features/console/holy_hand_grenade.feature") "grenade\n")
+        _ (run {:dir root} "git" "add" "features/console/command_extras.feature"
+                 "features/console/holy_hand_grenade.feature")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Extras spec")
+        _ (run {:dir root} "git" "merge" "--no-ff" "jump" "-m" "Merge jump into extras")
+        merge-head (head-sha root)
+        draft (fs/path root "tmp" "extras.handoff")]
+    (put-handoff! root "in_process" "50_extras.handoff"
+                  {:id "current"
+                   :from "(New Task)"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id "extras-id"
+                   :task "extras"
+                   :task-base-commit jump
+                   :body "extras"})
+    (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: extras\ncommit: %s\n" base))
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "swarm_handoff.sh") (str draft))
+          queued (-> (:out result) str/trim (str/replace #"^HANDOFF QUEUED: " ""))
+          content (read-file queued)]
+      (is (zero? (:exit result)))
+      (is (str/includes? content (str "commit: " merge-head "\n")))
+      (is (str/includes? content "artifacts: features/console/command_extras.feature,features/console/holy_hand_grenade.feature\n"))
+      (is (not (str/includes? content "wumpus_jump.feature"))))))
 
 (deftest swarm-handoff-refuses-a-merge-with-no-changed-files
   ;; Given HEAD is a merge whose first-parent diff is empty
