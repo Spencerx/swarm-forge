@@ -400,6 +400,38 @@
       (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/50_next.handoff")))
       (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/inbox/in_process") "*.handoff"))))))
 
+(deftest ready-for-next-starts-next-task-after-outbound-approval-delivered
+  ;; Given sender's prior git_handoff is already approved and in receiver's process
+  ;; When sender asks for another task
+  ;; Then the next queued task starts
+  (let [root (tmp-dir)
+        receiver (fs/path root ".worktrees/receiver")]
+    (init-repo! root)
+    (fs/create-dirs receiver)
+    (setup-project! root)
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "sender\tmaster\t%s\tsession\tSender\tcodex\ttask\nreceiver\treceiver\t%s\tsession\tReceiver\tcodex\ttask\n"
+                        root receiver))
+    (write-file (fs/path receiver ".swarmforge/handoffs/inbox/in_process/50_prior.handoff")
+                "from: sender\nto: receiver\nrecipient: receiver\npriority: 50\ntype: git_handoff\ntask_id: task-one\ntask: task-one\ncommit: 1234567890\napproved: true\n\npayload\n")
+    (put-handoff! root "new" "50_next.handoff"
+                  {:id "next"
+                   :from "(New Task)"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id "task-two"
+                   :task "task-two"
+                   :body "next task"})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "ready_for_next.sh"))
+          in-process (fs/path root ".swarmforge/handoffs/inbox/in_process/50_next.handoff")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "TASK_NAME: task-two"))
+      (is (fs/exists? in-process))
+      (is (not (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/50_next.handoff")))))))
+
 (deftest ready-for-next-batch-waits-while-outbound-approval-is-active
   ;; Given a batch-mode sender has an outbound git_handoff pending approval
   ;; When sender asks for the next batch

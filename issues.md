@@ -31,11 +31,11 @@ contaminated.
 
 Fix:
 
-- Treat a role with an active pending approval or sent-but-not-completed git
-  handoff as not idle.
+- Treat a role with an active pending approval or unprocessed outbox git handoff
+  as not idle.
 - `ready_for_next.sh` and `ready_for_next_batch.sh` must refuse to dequeue a new
-  task for a role while that role has active outbound git work awaiting approval
-  or delivery.
+  task for a role while that role has active outbound git work awaiting
+  approval or waiting in the outbox for the handoff daemon.
 - The refusal should be explicit, for example:
 
   ```text
@@ -43,8 +43,11 @@ Fix:
   ```
 
 - A role may resume its existing in-process task, but it must not move to a
-  different queued task until the previous outbound git handoff is accepted,
-  rejected, or otherwise terminal.
+  different queued task until the previous outbound git handoff is approved,
+  rejected, or still waiting to be processed by the daemon.
+- Once a git handoff is approved and delivered to the next role's inbox, the
+  sender may start the next queued task. The receiver's in-process work must not
+  keep blocking the sender.
 - Rejection must continue to remove/rollback the rejected commit and clear
   runtime state for that task id.
 - Artifact generation for git handoffs should use the task's accepted base
@@ -55,6 +58,8 @@ Fix:
 Expected behavior:
 
 - If `jump` is waiting for approval, the specifier cannot start `extras`.
+- Once `htw` is approved and delivered to coder, specifier can start `jump`
+  even if coder is still working `htw`.
 - If `jump` is rejected, the active branch rolls back before any later task
   records a task base.
 - If `extras` is eventually started, its `task_base_commit` is the accepted

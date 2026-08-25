@@ -92,13 +92,6 @@
          :when (not (str/blank? wt))]
      (fs/path wt ".swarmforge" "handoffs" "outbox"))))
 
-(defn active-recipient-dirs []
-  (for [cols (role-rows)
-        :let [wt (nth cols 2 nil)]
-        :when (not (str/blank? wt))
-        state ["new" "in_process"]]
-    (fs/path wt ".swarmforge" "handoffs" "inbox" state)))
-
 (defn outbound-git-from-role? [role file]
   (let [headers (header-map file)]
     (and (= "git_handoff" (get headers "type"))
@@ -110,9 +103,8 @@
     (let [pending (if-let [dir (pending-approval-dir)]
                     (recursive-handoff-files dir)
                     [])
-          outbox-active (mapcat recursive-handoff-files (active-outbox-dirs))
-          recipient-active (mapcat recursive-handoff-files (active-recipient-dirs))]
-      (->> (concat pending outbox-active recipient-active)
+          outbox-active (mapcat recursive-handoff-files (active-outbox-dirs))]
+      (->> (concat pending outbox-active)
            (filter #(outbound-git-from-role? role %))
            distinct
            vec))))
