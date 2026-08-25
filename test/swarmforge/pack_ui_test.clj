@@ -1198,6 +1198,13 @@
     (is (str/includes? html "scrollHeight"))
     (is (str/includes? html "firstPaint"))))
 
+(deftest pack-dashboard-chat-history-scrolls-normally
+  ;; Given dashboard HTML
+  ;; Then the master response history is an overflow scroller without flex-end alignment
+  (let [html (dashboard-html (tmp-dir))]
+    (is (re-find #"(?s)\.history\{[^}]*overflow:auto" html))
+    (is (not (re-find #"(?s)\.history\{[^}]*justify-content:flex-end" html)))))
+
 (deftest pack-dashboard-updates-chat-without-rebuilding-history
   ;; Given dashboard HTML
   ;; Then chat turns are keyed and existing bubbles are not replaced
