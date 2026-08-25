@@ -29,6 +29,7 @@
                        "dequeued_at" "completed_at" "task_base_commit" "non-forwarding"})
 (def allowed-fields #{"type" "to" "priority" "task_id" "task" "commit" "message"})
 (def allowed-types #{"git_handoff" "note"})
+(def script-dir (fs/parent *file*))
 
 (defn usage []
   (binding [*out* *err*]
@@ -162,6 +163,36 @@
 (defn current-task-base []
   (when-let [file (first (in-process-task-files))]
     (header-field file "task_base_commit")))
+
+(defn current-work-present? []
+  (seq (in-process-task-files)))
+
+(defn current-work-state-errors [headers]
+  (if-not (= "git_handoff" (get headers "type"))
+    []
+    (let [files (handoff-files (in-process-dir))
+          batches (batch-dirs (in-process-dir))
+          empty-batches (filter #(empty? (handoff-files %)) batches)]
+      (cond-> []
+        (and (seq files) (seq batches))
+        (conj "Ambiguous current work: both task and batch work are in process.")
+        (> (count files) 1)
+        (conj "Ambiguous current work: multiple tasks are in process.")
+        (> (count batches) 1)
+        (conj "Ambiguous current work: multiple batches are in process.")
+        (seq empty-batches)
+        (conj (str "Ambiguous current work: empty in-process batch "
+                   (first empty-batches) "."))))))
+
+(defn complete-current-after-git-handoff! [headers]
+  (when (and (= "git_handoff" (get headers "type"))
+             (current-work-present?))
+    (let [result (sh (str (fs/path script-dir "done_with_current.sh")))]
+      (print (:out result))
+      (binding [*out* *err*]
+        (print (:err result)))
+      (when-not (zero? (:exit result))
+        (exit! (:exit result) "CURRENT COMPLETION FAILED after handoff queued.")))))
 
 (defn with-lane-task [headers sender]
   (let [cards (board-cards-in-lane sender)
@@ -672,6 +703,7 @@
         (let [validation (validate headers ordered)
               all-errors (vec (concat errors
                                       (:errors validation)
+                                      (current-work-state-errors headers)
                                       (task-state-errors headers sender)
                                       (ancestry-errors headers (:canonical-commit validation))
                                       (duplicate-errors sender
@@ -691,6 +723,7 @@
                                                :artifacts (when files (str/join "," files))
                                                :sender sender})]
               (fs/delete draft)
-              (println "HANDOFF QUEUED:" (str outbox-file)))))))))
+              (println "HANDOFF QUEUED:" (str outbox-file))
+              (complete-current-after-git-handoff! headers))))))))
 
 (apply -main *command-line-args*)
