@@ -101,11 +101,24 @@
 (defn task-body-file [root name]
   (fs/path (board-dir root) (str name ".txt")))
 
+(defn task-doc-file [root name]
+  (fs/path root "tasks" (str name ".md")))
+
 (defn write-body! [root name text]
   (when (some? text)
     (let [file (task-body-file root name)]
       (fs/create-dirs (fs/parent file))
       (spit (str file) text))))
+
+(defn write-task-doc! [root name text]
+  (when (some? name)
+    (let [file (task-doc-file root name)
+          body (or text "")]
+      (fs/create-dirs (fs/parent file))
+      (spit (str file)
+            (str "# " name "\n\n"
+                 body
+                 (when-not (str/ends-with? body "\n") "\n"))))))
 
 (defn timestamp []
   (.format java.time.format.DateTimeFormatter/ISO_INSTANT
@@ -178,7 +191,8 @@
           (when (find-task rows name)
             (exit! 1 (str "Duplicate task name: " name)))
           (write-rows file (conj rows (task-row name lane (timestamp) (or (:task-id opts) (new-task-id name)))))
-          (write-body! root name (:text opts)))))))
+          (write-body! root name (:text opts))
+          (write-task-doc! root name (:text opts)))))))
 
 (defn rewrite-lane [line name lane]
   (let [[row-name _ created _updated task-id audit-count] (str/split line #"\t" -1)]

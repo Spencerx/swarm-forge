@@ -944,6 +944,21 @@
       (is (str/includes? content "artifacts: slice.md\n"))
       (is (not (str/includes? content "artifacts: none"))))))
 
+(deftest swarm-handoff-includes-committed-task-document
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        _ (write-file (fs/path root "tasks/htw.md") "# htw\n\nImplement the stories.\n")
+        _ (run {:dir root} "git" "add" "tasks/htw.md")
+        _ (run {:dir root} "git" "commit" "-q" "-m" "Add task document")
+        draft (fs/path root "tmp" "task-doc.handoff")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: htw\n")
+    (let [result (audit-and-submit-git-handoff
+                  {:dir root :env {"SWARMFORGE_ROLE" "sender"}} draft)
+          content (read-file (queued-path (:out result)))]
+      (is (zero? (:exit result)))
+      (is (str/includes? content "artifacts: tasks/htw.md\n")))))
+
 (deftest swarm-handoff-excludes-deleted-artifacts
   ;; Given a commit deletes one file and changes another
   ;; When it is queued

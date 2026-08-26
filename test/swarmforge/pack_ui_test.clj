@@ -246,7 +246,9 @@
           body (slurp (str (fs/path root ".swarmforge/board/htw-console-app.txt")))]
       (is (zero? (:exit created)))
       (is (= "specifier" (task-lane root "htw-console-app")))
-      (is (= text body)))))
+      (is (= text body))
+      (is (= (str "# htw-console-app\n\n" text "\n")
+             (slurp (str (fs/path root "tasks/htw-console-app.md"))))))))
 
 (deftest pack-board-serializes-concurrent-audit-increments
   (let [root (tmp-dir)
@@ -449,7 +451,8 @@
                  :gate "spec → coder"
                  :task_id "htw-console-app"
                  :task "htw-console-app"
-                 :artifacts []}]
+                 :artifacts []
+                 :reviews {}}]
                (:approvals state))))
       (finally
         (stop-tmux! sock)))))
@@ -678,7 +681,7 @@
 (deftest attention-reject-returns-to-master
   ;; Given pending
   ;; When --test-reject
-  ;; Then pending gone, card stays specifier
+  ;; Then the pending approval is unchanged because Reject only opens the dialog
   (let [root (tmp-dir)
         sock (do (setup-pack! root six-pack-roles)
                  (create-task root "htw-console-app" "specifier")
@@ -687,14 +690,14 @@
                  (start-tmux! root six-pack-roles))]
     (try
       (handoffd-once root)
-      (let [id (:id (first (:approvals (web-state root))))]
-        (pack-web root true "--test-reject" (str root) id)
-        (is (= [] (pending-names root)))
-        (is (= [] (inbox-names root six-pack-roles "coder")))
+      (let [id (:id (first (:approvals (web-state root))))
+            result (pack-web root false "--test-reject" (str root) id)]
+        (is (not (zero? (:exit result))))
+        (is (seq (pending-names root)))
         (is (= "specifier" (task-lane root "htw-console-app")))
         (is (= 1 (:audit_count (task-card root "htw-console-app"))))
-        (is (= [] (:approvals (web-state root))))
-        (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
+        (is (seq (:approvals (web-state root))))
+        (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app")))))
       (finally
         (stop-tmux! sock)))))
 
@@ -731,16 +734,17 @@
                          "task_base_commit: " base "\n"
                          "\n"
                          "payload\n"))
-        (let [result (pack-web root false "--test-reject" (str root) "50_from_specifier_to_coder")
+        (let [result (pack-web root false "--test-delete-approval" (str root) "50_from_specifier_to_coder")
               head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
               branches (:out (run {:dir root} "git" "branch" "--format=%(refname:short)"))]
           (is (zero? (:exit result)))
           (is (= base head))
-          (is (str/includes? branches (str "rejected-" (str/lower-case task-id) "-")))
+          (is (str/includes? branches (str "rejected/" task-id "/latest")))
+          (is (str/includes? branches (str "rejected/" task-id "/1")))
           (is (not (fs/exists? pending)))
           (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
           (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks" task-id)))
-          (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))))))
+          (is (nil? (task-lane root "htw-console-app"))))))))
 
 (deftest pack-dashboard-renders-attention-approvals
   ;; Given dashboard HTML
@@ -778,7 +782,9 @@
           body (slurp (str (fs/path root ".swarmforge/board/htw-console-app.txt")))]
       (is (zero? (:exit result)))
       (is (= "coder" (task-lane root "htw-console-app")))
-      (is (= text body)))))
+      (is (= text body))
+      (is (str/includes? (slurp (str (fs/path root "tasks/htw-console-app.md")))
+                         text)))))
 
 (deftest inject-master-records-send-keys-argv
   ;; Given master session swarmforge-specifier in roles.tsv
@@ -849,32 +855,38 @@
 
 (deftest attention-reject-injects-a-message-to-master
   ;; Given a pending approval and a tmux argv stub
-  ;; When --test-reject
-  ;; Then the notify file is written and master receives a one-line reject
+  ;; When retry with comments
+  ;; Then master receives those comments and no New Task note is queued
   (let [root (tmp-dir)
         argv-file (str (fs/path root "tmux.argv"))
         sock (str (fs/path root "tmux.sock"))]
     (setup-pack! root six-pack-roles)
     (create-task root "htw-console-app" "specifier")
-    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
-    (write-file
-     (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
-     (str "from: specifier\n"
-          "to: coder\n"
-          "priority: 50\n"
-          "type: git_handoff\n"
-          "task: htw-console-app\n"
-          "\n"
-          "payload\n"))
-    (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
-                               "--test-reject" (str root) "50_from_specifier_to_coder")
-          argv (read-argv argv-file)]
-      (is (zero? (:exit result)))
-      (is (= [] (pending-names root)))
-      (is (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app")))
-      (is (= "Rejected: htw-console-app" (last (first argv))))
-      (is (= "C-m" (last (second argv))))
-      (is (= "C-j" (last (nth argv 2)))))))
+    (let [task-id (:id (task-card root "htw-console-app"))]
+      (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+      (write-file
+       (fs/path root ".swarmforge/handoffs/pending_approval/50_from_specifier_to_coder.handoff")
+       (str "from: specifier\n"
+            "to: coder\n"
+            "priority: 50\n"
+            "type: git_handoff\n"
+            "task_id: " task-id "\n"
+            "task: htw-console-app\n"
+            "\n"
+            "payload\n"))
+      (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                                 "--test-retry-task" (str root)
+                                 "50_from_specifier_to_coder"
+                                 "use an RNG")
+            argv (read-argv argv-file)
+            notes (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))]
+        (is (zero? (:exit result)))
+        (is (= [] (pending-names root)))
+        (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-htw-console-app"))))
+        (is (str/includes? (str (last (first argv))) "use an RNG"))
+        (is (empty? (filter #(str/includes? (fs/file-name %) "New_Task") notes)))
+        (is (= "C-m" (last (second argv))))
+        (is (= "C-j" (last (nth argv 2))))))))
 
 (deftest pack-dashboard-chat-rail-posts-to-master
   ;; Given dashboard HTML
@@ -958,6 +970,7 @@
     (is (str/includes? html "data-task-name"))
     (is (str/includes? html "/task?name="))
     (is (str/includes? html "Documents"))
+    (is (str/includes? html "/doc?path="))
     (is (str/includes? html "resizable=yes"))
     (is (str/includes? html "/agent/"))
     (is (str/includes? html "setInterval(loadState"))
@@ -1108,12 +1121,18 @@
 
 (deftest pack-dashboard-html-wires-teardown
   ;; When serving dashboard.html
-  ;; Then Teardown posts /api/teardown after confirm
-  (let [html (dashboard-html (tmp-dir))]
+  ;; Then Teardown is a small button beside the pack title, not with New Task
+  (let [html (dashboard-html (tmp-dir))
+        identity-start (str/index-of html "class=\"pack-identity\"")
+        actions-start (str/index-of html "class=\"pack-actions\"")
+        teardown-at (str/index-of html "id=\"teardown-btn\"")
+        new-task-at (str/index-of html "id=\"btn-new-task\"")]
     (is (re-find #"id=\"teardown-btn\"" html))
+    (is (str/includes? html "btn-sm"))
     (is (str/includes? html "/api/teardown"))
     (is (str/includes? html "TEARDOWN"))
-    (is (str/includes? html "teardownSwarm"))))
+    (is (str/includes? html "teardownSwarm"))
+    (is (< identity-start teardown-at actions-start new-task-at))))
 
 (deftest pack-web-teardown-requires-confirm
   ;; Given a pack root
@@ -1354,12 +1373,18 @@
 
 (deftest pack-dashboard-rejected-card-has-edit-retry
   ;; Given dashboard HTML
-  ;; Then a rejected card opens an edit pane with Delete and Retry
+  ;; Then Attention Reject opens a dialog with Delete, Retry, and Accept
+  ;; And cards have no Edit control
   (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "openRejectEdit"))
+    (is (str/includes? html "openRejectDialog"))
+    (is (not (str/includes? html "openRejectEdit")))
+    (is (not (str/includes? html "Edit rejected card")))
     (is (str/includes? html "/api/tasks/retry"))
     (is (str/includes? html "rt-text"))
-    (is (str/includes? html "Retry"))))
+    (is (str/includes? html "rt-accept"))
+    (is (str/includes? html "Retry"))
+    (is (str/includes? html "Accept"))
+    (is (str/includes? html "Delete"))))
 
 (deftest pack-dashboard-attention-has-clarification-row
   ;; Given dashboard HTML
@@ -1405,6 +1430,35 @@
       (is (zero? (:exit result)))
       (is (= "HTW" (:name card)))
       (is (str/includes? (str (:status card)) "I'm idle, so I'm running ready_for_next.sh")))))
+
+(deftest pack-web-card-status-includes-codex-summaries
+  (doseq [sentence ["Received task extras from the board."
+                    "The HHG rules are now settled."
+                    "The operator resolved the throw messages."
+                    "Completed extras and queued the coder handoff."
+                    "The exact-commit audit found no remaining gaps."]]
+    (let [root (tmp-dir)
+          _ (setup-pack! root)
+          _ (create-task root "HTW" "specifier")
+          result (pack-web-env root {} "--test-status-pane" (str root)
+                               (str sentence "\nesc to interrupt · 3s\n"))
+          card (first (:tasks (json/parse-string (:out result) true)))]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str (:status card)) sentence)))))
+
+(deftest pack-web-card-status-ignores-tool-trace-lines
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web-env root {} "--test-status-pane" (str root)
+                             (str "I'll commit the spec.\n"
+                                  "• Ran 7 commands\n"
+                                  "• Edited features/003.feature\n"
+                                  "• Added tmp/htw-handoff.txt\n"))
+        card (first (:tasks (json/parse-string (:out result) true)))]
+    (is (zero? (:exit result)))
+    (is (str/includes? (str (:status card)) "I'll commit the spec"))
+    (is (not (str/includes? (str (:status card)) "Ran 7")))))
 
 (deftest pack-web-card-status-includes-continue-sentences
   ;; Given a specifier card and a pane tail whose last matching sentence uses continue
@@ -1552,6 +1606,7 @@
     (is (zero? (:exit result)))
     (is (nil? (task-lane root "HTW")))
     (is (not (fs/exists? (fs/path root ".swarmforge/board/HTW.txt"))))
+    (is (fs/exists? (fs/path root "tasks/HTW.md")))
     (create-task root "HTW" "specifier")
     (let [replacement (task-card root "HTW")]
       (is (not= old-id (:id replacement)))
@@ -1580,33 +1635,261 @@
     (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks")))))
 
 (deftest pack-web-retry-rejected-queues-a-master-note
-  ;; Given a rejected HTW card with a pending git_handoff
-  ;; When POST /api/tasks/retry with edited text
-  ;; Then the card stays, is not REJECTED, pending is gone, and a master note is queued
+  ;; Given a pending git_handoff
+  ;; When POST /api/tasks/retry with comments
+  ;; Then the card stays, original body is unchanged, audit_count increases, and no New Task note is queued
   (let [root (tmp-dir)
         _ (setup-pack! root)
         _ (create-task root "HTW" "specifier")
-        _ (increment-audit! root (:id (task-card root "HTW")))
-        _ (write-file (fs/path root ".swarmforge/notify/reject-HTW") "rejected\n")
+        task-id (:id (task-card root "HTW"))
+        _ (increment-audit! root task-id)
+        original (slurp (str (fs/path root ".swarmforge/board/HTW.txt")))
         pending (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
         _ (write-file pending
-                      "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\nold\n")
-        _ (write-pending-audit! root "HTW")
+                      (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                           "task_id: " task-id "\ntask: HTW\n\nold\n"))
+        _ (write-pending-audit! root task-id)
         _ (write-pending-audit! root "unrelated-id")
-        result (pack-web root false "--test-retry-task" (str root) "HTW" "new payload")
+        result (pack-web root false "--test-retry-task" (str root)
+                         "50_hello" "use an RNG")
         card (first (:tasks (web-state root)))
-        notes (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))
-        note (slurp (str (first notes)))]
+        notes (if (fs/directory? (fs/path root ".swarmforge/handoffs/outbox"))
+                (fs/list-dir (fs/path root ".swarmforge/handoffs/outbox"))
+                [])]
     (is (zero? (:exit result)))
     (is (= "specifier" (:lane card)))
-    (is (= 1 (:audit_count card)))
+    (is (= 2 (:audit_count card)))
     (is (not= "REJECTED" (:status card)))
+    (is (= original (slurp (str (fs/path root ".swarmforge/board/HTW.txt")))))
     (is (not (fs/exists? pending)))
     (is (= #{"unrelated-id"} (pending-audit-task-ids root)))
-    (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
-    (is (seq notes))
-    (is (str/includes? note "new payload"))
-    (is (str/includes? note "to: specifier"))))
+    (is (empty? (filter #(str/includes? (fs/file-name %) "New_Task") notes)))))
+
+(deftest pack-web-retry-snapshots-rejected-branches-without-reset
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (setup-pack! root)
+    (write-file (fs/path root "story.md") "base\n")
+    (run {:dir root} "git" "add" "story.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Base")
+    (create-task root "HTW" "specifier")
+    (let [task-id (:id (task-card root "HTW"))
+          base (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-file (fs/path root "story.md") "offer-1\n")
+      (run {:dir root} "git" "add" "story.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Offer 1")
+      (let [first-sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_first.handoff")]
+        (write-file pending
+                    (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                         "task_id: " task-id "\ntask: HTW\n"
+                         "commit: " first-sha "\n"
+                         "task_base_commit: " base "\n\n"
+                         "payload\n"))
+        (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                    "50_first" "first comments"))))
+        (let [head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+              branches (:out (run {:dir root} "git" "branch" "--format=%(refname:short)"))]
+          (is (= first-sha head))
+          (is (not= base head))
+          (is (str/includes? branches (str "rejected/" task-id "/1")))
+          (is (str/includes? branches (str "rejected/" task-id "/latest"))))
+        (write-file (fs/path root "story.md") "offer-2\n")
+        (run {:dir root} "git" "add" "story.md")
+        (run {:dir root} "git" "commit" "-q" "-m" "Offer 2")
+        (let [second-sha (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+              pending2 (fs/path root ".swarmforge/handoffs/pending_approval/50_second.handoff")]
+          (write-file pending2
+                      (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                           "task_id: " task-id "\ntask: HTW\n"
+                           "commit: " second-sha "\n"
+                           "task_base_commit: " base "\n\n"
+                           "payload\n"))
+          (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                      "50_second" "second comments"))))
+          (let [head (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+                branches (:out (run {:dir root} "git" "branch" "--format=%(refname:short)"))]
+            (is (= second-sha head))
+            (is (str/includes? branches (str "rejected/" task-id "/1")))
+            (is (str/includes? branches (str "rejected/" task-id "/2")))
+            (is (str/includes? branches (str "rejected/" task-id "/latest")))
+            (is (= 2 (:audit_count (task-card root "HTW"))))))))))
+
+(deftest pack-web-retry-restores-wandered-head
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (setup-pack! root)
+    (write-file (fs/path root "story.md") "base\n")
+    (run {:dir root} "git" "add" "story.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Base")
+    (create-task root "HTW" "specifier")
+    (let [task-id (:id (task-card root "HTW"))]
+      (write-file (fs/path root "story.md") "offer\n")
+      (run {:dir root} "git" "add" "story.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Offer")
+      (let [offer (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_offer.handoff")]
+        (write-file pending
+                    (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                         "task_id: " task-id "\ntask: HTW\n"
+                         "commit: " offer "\n\npayload\n"))
+        (write-file (fs/path root "story.md") "wander\n")
+        (run {:dir root} "git" "add" "story.md")
+        (run {:dir root} "git" "commit" "-q" "-m" "Wander")
+        (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                    "50_offer" "stay on the offer"))))
+        (is (= offer (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))))))))
+
+(deftest pack-web-retry-keeps-task-base-for-the-next-git-handoff
+  (let [root (tmp-dir)]
+    (run {:dir root} "git" "init" "-q")
+    (run {:dir root} "git" "config" "user.email" "test@example.com")
+    (run {:dir root} "git" "config" "user.name" "Test User")
+    (write-file (fs/path root "README.md") "initial\n")
+    (run {:dir root} "git" "add" "README.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Initial")
+    (setup-pack! root ["specifier" "coder"])
+    (create-task root "HTW" "specifier")
+    (let [task-id (:id (task-card root "HTW"))
+          base (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))]
+      (write-file (fs/path root "tasks/HTW.md") "# HTW\n\nImplement the stories.\n")
+      (write-file (fs/path root "extra.md") "first offer\n")
+      (run {:dir root} "git" "add" "tasks/HTW.md" "extra.md")
+      (run {:dir root} "git" "commit" "-q" "-m" "Offer")
+      (let [offer (str/trim (:out (run {:dir root} "git" "rev-parse" "--short=10" "HEAD")))
+            pending (fs/path root ".swarmforge/handoffs/pending_approval/50_offer.handoff")]
+        (write-file pending
+                    (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                         "task_id: " task-id "\ntask: HTW\n"
+                         "commit: " offer "\n"
+                         "task_base_commit: " base "\n\n"
+                         "payload\n"))
+        (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                    "50_offer" "use an RNG"))))
+        (write-file (fs/path root "more.md") "stacked\n")
+        (run {:dir root} "git" "add" "more.md")
+        (run {:dir root} "git" "commit" "-q" "-m" "Stacked")
+        (write-file (fs/path root "tmp/retry.handoff")
+                    "type: git_handoff\nto: coder\npriority: 50\ntask: HTW\n")
+        (let [opts {:dir root :env {"SWARMFORGE_ROLE" "specifier"} :ok? false}
+              first-call (run opts (script "swarm_handoff.sh")
+                              (str (fs/path root "tmp/retry.handoff")))]
+          (is (zero? (:exit first-call)))
+          (is (str/includes? (:out first-call) "AUDIT_REQUIRED"))
+          (let [queued (run (assoc opts :ok? true) (script "swarm_handoff.sh")
+                            (str (fs/path root "tmp/retry.handoff")))
+                outbox (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")
+                content (slurp (str (first outbox)))]
+            (is (zero? (:exit queued)))
+            (is (str/includes? content "artifacts:"))
+            (is (str/includes? content "extra.md"))
+            (is (str/includes? content "more.md"))
+            (is (str/includes? content "tasks/HTW.md"))))))))
+
+(deftest pack-dashboard-documents-fetch-into-a-growable-window
+  (let [html (dashboard-html (tmp-dir))
+        src (dashboard-js-fn html "viewDoc")]
+    (is (str/includes? src "fetch(\"/doc?path=\""))
+    (is (str/includes? src "resizable=yes"))
+    (is (str/includes? src "fileName(path)"))
+    (is (str/includes? src "\"doc-\" + encodeURIComponent(path)"))
+    (is (not (str/includes? src "\"doc-\" + name")))
+    (is (str/includes? html "fillDocWindow"))
+    (is (str/includes? html "doc-comments"))
+    (is (str/includes? html "doc-save"))
+    (is (str/includes? html "doc-cancel"))
+    (is (str/includes? html "Save"))
+    (is (str/includes? html "Cancel"))
+    (is (str/includes? html "overflow:auto"))
+    (is (str/includes? html "white-space:pre-wrap"))
+    (is (str/includes? html "\\u2610"))
+    (is (str/includes? html "\\u2713"))
+    (is (str/includes? html "\\u2717"))
+    (is (str/includes? html "hasRemedialComments"))
+    (is (str/includes? html "approve.disabled"))
+    (is (str/includes? html "Remedial comments will be ignored"))
+    (is (str/includes? html "confirm("))
+    (is (not (str/includes? html "id=\"doc-layer\"")))))
+
+(deftest pack-web-serves-a-document
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        result (pack-web root false "--test-doc" (str root) "tasks/HTW.md")]
+    (is (zero? (:exit result)))
+    (is (str/includes? (:out result) "HTW"))
+    (is (str/includes? (:out result) "Integrate HTW stories"))))
+
+(defn raw-state [root]
+  (json/parse-string (:out (pack-web root true "--test-state" (str root)))))
+
+(defn write-pending-approval! [root {:keys [id task task-id artifacts body]}]
+  (write-file
+   (fs/path root ".swarmforge/handoffs/pending_approval" (str id ".handoff"))
+   (str "from: specifier\n"
+        "to: coder\n"
+        "type: git_handoff\n"
+        "task_id: " (or task-id task) "\n"
+        "task: " task "\n"
+        (when artifacts (str "artifacts: " artifacts "\n"))
+        "\n"
+        (or body "payload\n"))))
+
+(deftest pack-web-saves-remedial-comments-on-the-pending-approval
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (write-file (fs/path root "features/console.feature") "Feature: cave\n")
+        _ (write-pending-approval! root {:id "50_hello" :task "HTW"
+                                         :artifacts "features/console.feature"})
+        saved (pack-web root false "--test-save-comments" (str root)
+                        "50_hello" "features/console.feature" "use an RNG")
+        reviews (get (first (get (raw-state root) "approvals")) "reviews")]
+    (is (zero? (:exit saved)))
+    (is (= "use an RNG" (get reviews "features/console.feature")))
+    (let [blanked (pack-web root false "--test-save-comments" (str root)
+                            "50_hello" "features/console.feature" "  \n")
+          after (get (first (get (raw-state root) "approvals")) "reviews")]
+      (is (zero? (:exit blanked)))
+      (is (= "" (get after "features/console.feature")))
+      (is (contains? after "features/console.feature")))))
+
+(deftest pack-web-approve-discards-remedial-comments
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        _ (write-pending-approval! root {:id "50_hello" :task "HTW"})
+        _ (pack-web root false "--test-save-comments" (str root)
+                    "50_hello" "features/console.feature" "use an RNG")
+        result (pack-web root false "--test-approve" (str root) "50_hello")]
+    (is (zero? (:exit result)))
+    (is (= [] (pending-names root)))
+    (is (not (fs/exists? (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.reviews.json"))))))
+
+(deftest pack-web-retry-delivers-remedial-comments-to-master
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        sock (str (fs/path root "tmux.sock"))]
+    (setup-pack! root)
+    (create-task root "HTW" "specifier")
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str sock "\n"))
+    (let [task-id (:id (task-card root "HTW"))]
+      (write-pending-approval! root {:id "50_hello" :task "HTW" :task-id task-id})
+      (pack-web root false "--test-save-comments" (str root)
+                "50_hello" "features/console.feature" "use an RNG")
+      (let [result (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                                 "--test-retry-task" (str root) "50_hello" "")
+            argv (read-argv argv-file)
+            injected (str (last (first argv)))]
+        (is (zero? (:exit result)))
+        (is (str/includes? injected "features/console.feature"))
+        (is (str/includes? injected "use an RNG"))
+        (is (not (str/includes? injected "New Task")))
+        (is (not (fs/exists? (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.reviews.json"))))))))
 
 (deftest pack-web-post-task-duplicate-keeps-the-server
   ;; Given a card named HTW
@@ -1624,11 +1907,11 @@
 
 (deftest pack-web-unknown-approval-keeps-the-server
   ;; Given a pack with no pending approval
-  ;; When POST /api/approvals/missing/reject
+  ;; When POST /api/approvals/missing/approve
   ;; Then it reports Unknown approval and the next request still works
   (let [root (tmp-dir)
         _ (setup-pack! root)
-        result (pack-web root false "--test-reject" (str root) "no-such-id")]
+        result (pack-web root false "--test-approve" (str root) "no-such-id")]
     (is (not (zero? (:exit result))))
     (is (str/includes? (:out result) "error"))
     (is (str/includes? (str (:err result) (:out result)) "Unknown approval"))

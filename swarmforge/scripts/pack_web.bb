@@ -35,7 +35,10 @@
        "  pack_web.sh --test-answer-clarification <root> <id> <text>\n"
        "  pack_web.sh --test-task <root> <name>\n"
        "  pack_web.sh --test-delete-task <root> <name>\n"
-       "  pack_web.sh --test-retry-task <root> <name> <text>\n"
+       "  pack_web.sh --test-delete-approval <root> <id>\n"
+       "  pack_web.sh --test-retry-task <root> <id> <comments>\n"
+       "  pack_web.sh --test-save-comments <root> <id> <path> <comments>\n"
+       "  pack_web.sh --test-doc <root> <path>\n"
        "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
 
 (def example-task-name "htw-console-app")
@@ -52,7 +55,8 @@
 
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name
          in-process-for-row in-process-task-names approvals
-         handoff-files batch-dirs in-process-dir allowed-doc?)
+         handoff-files batch-dirs in-process-dir allowed-doc?
+         delete-approval! retry-approval!)
 
 (defn usage []
   (binding [*out* *err*]
@@ -194,7 +198,16 @@
                  (re-find #"hand off" n)
                  (re-find #"handing off" n)
                  (re-find #"handoff" n)
-                 (re-find #"continue" n)))))
+                 (re-find #"continue" n)
+                 (re-find #"\breceived\b" n)
+                 (re-find #"\bsettled\b" n)
+                 (re-find #"\bresolved\b" n)
+                 (re-find #"\bcompleted\b" n)
+                 (re-find #"\bfound\b" n)))))
+
+(defn tool-trace? [sentence]
+  (boolean (re-find #"(?i)^(?:•\s*)?(?:Ran|Edited|Added)\b"
+                    (fold-apostrophe sentence))))
 
 (defn mail-banner? [sentence]
   (let [n (str/lower-case (fold-apostrophe sentence))]
@@ -204,6 +217,7 @@
 
 (defn status-sentence? [sentence]
   (and (not (mail-banner? sentence))
+       (not (tool-trace? sentence))
        (or (i-status? sentence) (other-status? sentence))))
 
 (defn im-status [role text backend]
@@ -326,18 +340,40 @@
 (defn approval-id [path]
   (str/replace (fs/file-name path) #"\.handoff$" ""))
 
-(defn approval-entry [path]
+(defn reviews-file [root id]
+  (fs/path (pending-dir root) (str id ".reviews.json")))
+
+(defn read-reviews [root id]
+  (let [file (reviews-file root id)]
+    (if (fs/regular-file? file)
+      (try
+        (let [parsed (json/parse-string (slurp (str file)))]
+          (if (map? parsed) parsed {}))
+        (catch Exception _ {}))
+      {})))
+
+(defn write-reviews! [root id reviews]
+  (let [file (reviews-file root id)]
+    (fs/create-dirs (fs/parent file))
+    (spit (str file) (json/generate-string reviews))))
+
+(defn drop-reviews! [root id]
+  (fs/delete-if-exists (reviews-file root id)))
+
+(defn approval-entry [root path]
   (let [headers (:headers (parse-message path))
-        to (first (comma-list (get headers "to")))]
-    {:id (approval-id path)
+        to (first (comma-list (get headers "to")))
+        id (approval-id path)]
+    {:id id
      :gate (str "spec → " to)
      :task_id (or (not-empty (get headers "task_id")) (get headers "task"))
      :task (get headers "task")
-     :artifacts (filterv #(allowed-doc? (fs/parent (fs/parent (fs/parent (fs/parent path)))) %)
-                          (comma-list (get headers "artifacts")))}))
+     :artifacts (filterv #(allowed-doc? root %)
+                          (comma-list (get headers "artifacts")))
+     :reviews (read-reviews root id)}))
 
 (defn approvals [root]
-  (mapv approval-entry (pending-files root)))
+  (mapv #(approval-entry root %) (pending-files root)))
 
 (defn listed [dir pred]
   (if (fs/directory? dir)
@@ -727,34 +763,24 @@
   (fs/delete-if-exists (reject-notify root name)))
 
 (defn retry-task! [root name text]
-  (when (str/blank? name)
-    (throw (ex-info "Missing task name" {:http-status 400})))
-  (when-not (rejected-task? root name)
-    (throw (ex-info (str "Not rejected: " name) {:http-status 400})))
-  (let [body (or text "")
-        task-id (task-id-for-name root name)
-        file (fs/path root ".swarmforge" "board" (str name ".txt"))]
-    (when-not (str/blank? body)
-      (spit (str file) (if (str/ends-with? body "\n") body (str body "\n"))))
-    (drop-task-handoffs! root task-id name)
-    (drop-task-audits! root task-id name)
-    (fs/delete-if-exists (reject-notify root name))
-    (queue-new-task-note! root task-id name (if (str/blank? body)
-                                              (if (fs/regular-file? file) (slurp (str file)) "")
-                                              body))))
+  (throw (ex-info "Retry requires a pending approval id" {:http-status 400})))
 
 (defn post-delete-task [root body]
-  (let [{:keys [name]} (json/parse-string (or body "{}") true)]
+  (let [{:keys [name id]} (json/parse-string (or body "{}") true)]
     (try
-      (delete-task! root name)
+      (if (not-empty id)
+        (delete-approval! root id)
+        (delete-task! root name))
       (json-ok)
       (catch Exception e
         (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
 
 (defn post-retry-task [root body]
-  (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
+  (let [{:keys [id comments]} (json/parse-string (or body "{}") true)]
     (try
-      (retry-task! root name text)
+      (when (str/blank? id)
+        (throw (ex-info "Missing approval id" {:http-status 400})))
+      (retry-approval! root id comments)
       (json-ok)
       (catch Exception e
         (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
@@ -845,7 +871,14 @@
         dest (fs/path root ".swarmforge" "handoffs" "outbox" (fs/file-name src))]
     (fs/create-dirs (fs/parent dest))
     (spit (str dest) (with-approved (slurp (str src))))
-    (fs/delete-if-exists src)))
+    (fs/delete-if-exists src)
+    (drop-reviews! root id)))
+
+(defn save-review! [root id path comments]
+  (when (str/blank? path)
+    (throw (ex-info "Missing path" {:http-status 400})))
+  (require-pending! root id)
+  (write-reviews! root id (assoc (read-reviews root id) path (str/trim (or comments "")))))
 
 (defn write-reject-notify! [root task]
   (when-not (str/blank? task)
@@ -860,50 +893,174 @@
                       {:http-status 500})))
     (str/trim (:out result))))
 
-(defn rejected-branch-name [task-id]
-  (str "rejected-" (id-slug task-id) "-" (id-timestamp)))
+(defn git-ok? [root & args]
+  (zero? (:exit (apply sh (concat ["git" "-C" (str root)] args)))))
+
+(defn git-repo? [root]
+  (git-ok? root "rev-parse" "--is-inside-work-tree"))
+
+(defn worktree-for [root role]
+  (if-let [row (role-row root role)]
+    (or (not-empty (nth row 2 nil)) (str root))
+    (str root)))
+
+(defn rejected-ref [task-id n]
+  (str "rejected/" task-id "/" n))
+
+(defn rejected-latest [task-id]
+  (str "rejected/" task-id "/latest"))
+
+(defn git-ref-exists? [root ref]
+  (git-ok? root "show-ref" "--verify" "--quiet" (str "refs/heads/" ref)))
+
+(defn next-rejected-n [root task-id]
+  (loop [n 1]
+    (if (git-ref-exists? root (rejected-ref task-id n))
+      (recur (inc n))
+      n)))
+
+(defn snapshot-rejected! [root task-id commit n]
+  (when (and (git-repo? root) (not (str/blank? task-id)) (not (str/blank? commit)))
+    (git! root "branch" "-f" (rejected-ref task-id n) commit)
+    (git! root "branch" "-f" (rejected-latest task-id) commit)))
+
+(defn restore-commit! [worktree commit]
+  (when (and (git-repo? worktree) (not (str/blank? commit))
+             (git-ok? worktree "rev-parse" "--verify" commit))
+    (let [head (git! worktree "rev-parse" "HEAD")
+          want (git! worktree "rev-parse" commit)]
+      (when (not= head want)
+        (git! worktree "reset" "--hard" commit)))))
 
 (defn commit-parent [root commit]
-  (not-empty (git! root "rev-parse" "--short=10" (str commit "^"))))
+  (when (and (git-repo? root) (not (str/blank? commit)))
+    (not-empty (git! root "rev-parse" "--short=10" (str commit "^")))))
 
 (defn rollback-target [root headers]
   (or (not-empty (get headers "task_base_commit"))
       (when-let [commit (not-empty (get headers "commit"))]
         (commit-parent root commit))))
 
-(defn preserve-and-rollback! [root headers]
-  (when-let [commit (not-empty (get headers "commit"))]
-    (let [task-id (or (not-empty (get headers "task_id")) (get headers "task"))
-          branch (rejected-branch-name task-id)]
-      (git! root "branch" branch commit)
-      (when-let [target (rollback-target root headers)]
-        (git! root "reset" "--hard" target)))))
+(defn rollback-to-base! [root headers]
+  (when-let [target (rollback-target root headers)]
+    (when (git-repo? root)
+      (git! root "reset" "--hard" target))))
 
-(defn reject! [root id]
+(defn increment-audit-count! [root task-id]
+  (when-not (str/blank? task-id)
+    (pack-board root "increment-audit" "--task-id" task-id)))
+
+(defn review-findings [reviews]
+  (->> reviews
+       (filter (fn [[_ text]] (not (str/blank? (str/trim (str text))))))
+       (map (fn [[path text]] (str path ":\n" (str/trim (str text)))))
+       (str/join "\n\n")))
+
+(defn retry-message [task comments reviews]
+  (let [extra (str/trim (or comments ""))
+        findings (review-findings reviews)]
+    (str "Retry audit for " task
+         ". Re-read tasks/" task ".md as operator intent."
+         " Read the remedial comments as audit findings."
+         (when-not (str/blank? extra) (str "\n\n" extra))
+         (when-not (str/blank? findings) (str "\n\n" findings)))))
+
+(defn task-inbox-files [worktree state task-id task]
+  (let [wanted (set (remove str/blank? [task-id task]))]
+    (->> (glob-handoffs (fs/path worktree ".swarmforge" "handoffs" "inbox" state))
+         (filter #(contains? wanted (handoff-task-id %)))
+         vec)))
+
+(defn write-retry-in-process! [worktree headers]
+  (let [task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+        task (or (get headers "task") task-id)
+        base (not-empty (get headers "task_base_commit"))
+        from (or (get headers "from") "")
+        dir (fs/path worktree ".swarmforge" "handoffs" "inbox" "in_process")
+        file (fs/path dir (str "50_retry_" (str/replace (or task-id "task") #"[^A-Za-z0-9]+" "_") ".handoff"))]
+    (when-not (str/blank? task-id)
+      (fs/create-dirs dir)
+      (spit (str file)
+            (str "from: (Retry)\n"
+                 "to: " from "\n"
+                 "priority: 50\n"
+                 "type: note\n"
+                 "task_id: " task-id "\n"
+                 "task: " task "\n"
+                 (when base (str "task_base_commit: " base "\n"))
+                 "\n"
+                 "Retry audit.\n")))))
+
+(defn restore-task-base! [root headers]
+  (let [task-id (or (not-empty (get headers "task_id")) (get headers "task"))
+        task (get headers "task")
+        wt (worktree-for root (get headers "from"))
+        in-proc (task-inbox-files wt "in_process" task-id task)
+        done (task-inbox-files wt "completed" task-id task)]
+    (cond
+      (seq in-proc) nil
+      (seq done)
+      (let [src (first done)
+            dest-dir (fs/path wt ".swarmforge" "handoffs" "inbox" "in_process")]
+        (fs/create-dirs dest-dir)
+        (fs/move src (fs/path dest-dir (fs/file-name src)) {:replace-existing true}))
+      :else (write-retry-in-process! wt headers))))
+
+(defn retry-approval! [root id comments]
   (let [src (require-pending! root id)
         headers (:headers (parse-message src))
         task (get headers "task")
-        task-id (or (not-empty (get headers "task_id")) task)]
+        task-id (or (not-empty (get headers "task_id")) task)
+        commit (not-empty (get headers "commit"))
+        n (if (git-repo? root) (next-rejected-n root task-id) 1)
+        wt (worktree-for root (get headers "from"))
+        reviews (read-reviews root id)]
+    (when commit
+      (snapshot-rejected! root task-id commit n)
+      (restore-commit! wt commit))
+    (fs/delete-if-exists src)
+    (drop-reviews! root id)
+    (drop-task-audits! root task-id task)
+    (restore-task-base! root headers)
+    (increment-audit-count! root task-id)
+    (when-not (str/blank? task)
+      (inject-master! root (retry-message task comments reviews)))))
+
+(defn delete-approval! [root id]
+  (let [src (require-pending! root id)
+        headers (:headers (parse-message src))
+        task (get headers "task")
+        task-id (or (not-empty (get headers "task_id")) task)
+        commit (not-empty (get headers "commit"))
+        n (if (git-repo? root) (next-rejected-n root task-id) 1)
+        wt (worktree-for root (get headers "from"))]
+    (when commit
+      (snapshot-rejected! root task-id commit n))
+    (rollback-to-base! wt headers)
     (archive-rejected! root task-id task)
-    (preserve-and-rollback! root headers)
     (drop-task-handoffs! root task-id task)
     (drop-task-audits! root task-id task)
-    (write-reject-notify! root task)
-    (when-not (str/blank? task)
-      (inject-master! root (reject-message task)))))
+    (pack-board root "delete" "--name" task)
+    (fs/delete-if-exists (reject-notify root task))
+    (drop-reviews! root id)))
 
 (defn approval-route [uri]
   (let [path (first (str/split (or uri "") #"\?"))]
-    (when-let [[_ id action] (re-matches #"/api/approvals/([^/]+)/(approve|reject)" path)]
+    (when-let [[_ id action] (re-matches #"/api/approvals/([^/]+)/(approve|reject|comments)" path)]
       {:id (java.net.URLDecoder/decode id "UTF-8")
        :action action})))
 
-(defn post-approval [root uri]
+(defn post-approval [root uri body]
   (if-let [{:keys [id action]} (approval-route uri)]
-    (do (if (= "approve" action)
-          (approve! root id)
-          (reject! root id))
-        (json-ok))
+    (case action
+      "approve" (do (approve! root id)
+                    (json-ok))
+      "comments" (let [{:keys [path comments]} (json/parse-string (or body "{}") true)]
+                   (save-review! root id path comments)
+                   (json-ok))
+      {:status 400
+       :headers {"Content-Type" "application/json"}
+       :body (json/generate-string {:error "Reject opens the dialog; use Retry, Delete, or Accept."})})
     {:status 404 :body "Not found"}))
 
 (defn query-value [uri key]
@@ -928,7 +1085,8 @@
       (and (some? file)
            (fs/regular-file? file)
            (or (under-dir? file (existing-path root "features"))
-               (under-dir? file (existing-path root "qa")))))))
+               (under-dir? file (existing-path root "qa"))
+               (under-dir? file (existing-path root "tasks")))))))
 
 (defn get-doc [root uri]
   (let [rel (query-value uri "path")]
@@ -1212,7 +1370,7 @@
     (= "/api/tasks/retry" uri) (post-retry-task root body)
     (= "/api/chat" uri) (post-chat root body)
     (= "/api/teardown" uri) (teardown-response root body)
-    (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri)
+    (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri body)
     (str/starts-with? (or uri "") "/api/clarifications/") (post-clarification root uri body)
     :else {:status 404 :body "Not found"}))
 
@@ -1256,11 +1414,23 @@
         (println (:body resp)))
       (System/exit 1))))
 
-(defn test-retry-task! [root name text]
+(defn test-delete-approval! [root id]
+  (let [resp (handle-request (require-root! root)
+                             {:method "POST"
+                              :uri "/api/tasks/delete"
+                              :body (json/generate-string {:id id})})]
+    (print (:body resp))
+    (flush)
+    (when-not (= 200 (:status resp))
+      (binding [*out* *err*]
+        (println (:body resp)))
+      (System/exit 1))))
+
+(defn test-retry-task! [root id comments]
   (let [resp (handle-request (require-root! root)
                              {:method "POST"
                               :uri "/api/tasks/retry"
-                              :body (json/generate-string {:name name :text (or text "")})})]
+                              :body (json/generate-string {:id id :comments (or comments "")})})]
     (print (:body resp))
     (flush)
     (when-not (= 200 (:status resp))
@@ -1299,6 +1469,14 @@
   (test-http! (handle-request (require-root! root)
                               {:method "POST"
                                :uri (str "/api/approvals/" id "/" action)})))
+
+(defn test-save-comments! [root id path comments]
+  (when (str/blank? id)
+    (exit! 1 "Missing approval id"))
+  (test-http! (handle-request (require-root! root)
+                              {:method "POST"
+                               :uri (str "/api/approvals/" id "/comments")
+                               :body (json/generate-string {:path path :comments (or comments "")})})))
 
 (defn test-pane! [root role]
   (when (str/blank? role)
@@ -1408,6 +1586,14 @@
                                  :uri (str "/task?name=" name)})))
   (flush))
 
+(defn test-doc! [root path]
+  (when (str/blank? path)
+    (exit! 1 "Missing path"))
+  (print (:body (handle-request (require-root! root)
+                                {:method "GET"
+                                 :uri (str "/doc?path=" path)})))
+  (flush))
+
 (defn test-teardown! [root confirm]
   (binding [*sync-teardown?* true]
     (let [resp (handle-request (require-root! root)
@@ -1480,8 +1666,11 @@
     "--test-status-persist" (test-status-persist! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-answer-clarification" (test-answer-clarification! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-task" (test-task! (second args) (nth args 2 nil))
+    "--test-doc" (test-doc! (second args) (nth args 2 nil))
     "--test-delete-task" (test-delete-task! (second args) (nth args 2 nil))
+    "--test-delete-approval" (test-delete-approval! (second args) (nth args 2 nil))
     "--test-retry-task" (test-retry-task! (second args) (nth args 2 nil) (nth args 3 nil))
+    "--test-save-comments" (test-save-comments! (second args) (nth args 2 nil) (nth args 3 nil) (nth args 4 nil))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))

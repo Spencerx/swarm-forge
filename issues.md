@@ -1,63 +1,84 @@
-# Remove empty audit_pending directories after a successful handoff
+# Per-document remedial comments on Attention approvals
 
 ## Problem
 
-A Git-handoff audit challenge lives under `.swarmforge/handoffs/audit_pending/`
-as a sender-hash directory containing a task `.edn` file. After a successful
-unchanged submit, the helper deletes the `.edn` file but leaves the sender
-directory behind.
-
-A finished four-squad run left four empty hash directories there. They look
-like stuck audits and accumulate across tasks.
+Attention review is yes/no on the whole git_handoff. The operator opens
+Documents, reads files, and has nowhere to attach findings to a file. The
+only comment box is the Reject dialog, after Reject is already chosen, and
+it is one blob for the whole packet.
 
 ## Behavior
 
-- When an audit challenge is recorded, keep the existing sender-hash directory
-  and task `.edn` file.
-- When that challenge is consumed by a successful unchanged handoff, delete the
-  `.edn` file and remove the sender-hash directory if it is then empty.
-- When a changed candidate invalidates prior challenges, apply the same
-  cleanup: no empty sender-hash directories remain.
-- Do not delete `.swarmforge/handoffs/audit_pending/` itself, or its lock file.
-- A later audit for the same sender may recreate the directory.
+Each Documents menu item shows one of three marks:
+
+- Empty box: the document has not been opened for reading (or was opened
+  and Cancelled without a prior Save).
+- Green check: the document was Saved with no remedial comments (empty or
+  whitespace only).
+- Red X: the document has saved remedial comments.
+
+The document window stays growable. Title and body still come from the
+existing `/doc?path=` fetch. At the bottom is a comments box: scrollable
+and word-wrapped. The old Close control is replaced by **Save** and
+**Cancel**.
+
+Save writes the comments for that path onto the pending approval. Cancel
+closes the window and does not change what was already saved.
+
+Opening a red-X item loads every saved comment for that document into the
+box. Cancel in that case does not delete them. The only way to clear
+saved comments is to blank the box (or leave only whitespace) and Save.
+That turns the item into a green check.
+
+Comments are operator findings about the file, not edits to it. Store
+them with the pending approval, keyed by approval id and path. Do not
+write them into the artifact. They survive dashboard polls and reloads
+until Retry, Accept, or Delete.
+
+Whitespace-only comments count as empty.
+
+## Approval row
+
+If any document on that approval has non-empty remedial comments, the
+Attention row’s **Approve** is disabled (greyed). **Reject** stays
+enabled. Unread empty boxes do not disable Approve.
+
+## Reject dialog
+
+Reject still opens the three-way dialog (Delete, Retry, Accept).
+
+**Accept** stays enabled. If any remedial comments are saved, Accept
+first confirms that those comments will be ignored. Confirm, not a
+one-button alert, so the operator can back out. On confirm, Accept is
+the original Approve: mark approved, deliver, do not roll back, do not
+increment `audit_count`, discard the comments, do not send them to the
+agent.
+
+**Retry** is the path that uses the comments. Deliver every saved
+per-document comment (path plus text) to the master role as audit
+findings, and direct that role to read them, re-read the original task
+document, treat the comments as findings, commit on top of the rejected
+SHA, and `git_handoff` HEAD. Do not make the operator retype document
+comments in the Reject dialog. That textarea remains extra notes only.
+
+**Delete** archives and removes the card as today; saved comments go
+away with the pending handoff.
 
 ## Verification
 
-Cover successful unchanged submit, changed-candidate invalidation, and a second
-audit by the same sender after cleanup. After each successful or invalidated
-challenge, `audit_pending` must contain no empty sender-hash directories. A
-still-pending challenge must keep its directory and `.edn` file.
+Cover dashboard HTML/JS: Documents items can show empty, check, and X;
+the document window has a scrollable word-wrapped comments box, Save,
+and Cancel; `/doc?path=` is still the fetch.
 
-# Treat an already-answered clarification as success
+Cover saved state: Save with text marks X and reopening that item shows
+the text; Cancel after an edit leaves the previous saved text; Save of
+blank/whitespace clears comments and marks a check; reload/poll does not
+drop saved comments.
 
-## Problem
+Cover the row: any non-empty comment disables Approve and leaves Reject
+enabled; unread items do not disable Approve.
 
-An agent asks the operator with `pack_dashboard_request.sh clarify`. The
-operator answers on the dashboard, which moves the clarification from pending
-to done and injects the answer into the pane.
-
-The agent then runs `pack_dashboard_request.sh answer <clar-id> …` to record
-that it received the answer. That command looks only for a pending *request*,
-not a done clarification, and exits `Unknown pending request`.
-
-In four-squad the specifier hit this after the HHG clarification was already
-answered. The work continued, but the helper reported a failure for a closed
-item.
-
-## Behavior
-
-- `pack_dashboard_request.sh answer <id>` must succeed when `<id>` is a
-  clarification the operator has already answered.
-- Do not recreate a pending clarification or overwrite the stored operator
-  response.
-- Print a stable success line that names the id.
-- A truly unknown id (never created) still fails.
-- Answering a still-pending operator request is unchanged.
-
-## Verification
-
-Cover: operator answers a clarification, then the originating role runs
-`answer` with that clar id and a local file. The command must exit 0, leave the
-clarification in `done` with the original operator text, and not create a
-pending request. An unknown id must still fail. A pending operator-to-agent
-request must still move to done with the agent's answer.
+Cover Accept: with comments, a confirm warns they will be ignored; on
+confirm the handoff is approved and comments are not injected. Cover
+Retry: comments are delivered to master with the paths, no `(New Task)`
+note, original task id and body unchanged. Do not pin prompt wording.
