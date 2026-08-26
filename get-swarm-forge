@@ -1,6 +1,8 @@
 #!/bin/zsh
 set -euo pipefail
 
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
+
 valid_agents=(claude codex copilot grok)
 default_repo_url="https://github.com/unclebob/swarm-forge"
 
@@ -46,8 +48,8 @@ download_branch() {
 }
 
 fail_missing() {
-  local path="$1"
-  echo "get-swarm-forge: missing required file after composing swarm: $path" >&2
+  local missing_path="$1"
+  echo "get-swarm-forge: missing required file after composing swarm: $missing_path" >&2
   exit 1
 }
 
@@ -84,8 +86,8 @@ required_files=(
   swarmforge/scripts/done_with_current.sh
 )
 
-for path in "${required_files[@]}"; do
-  [[ -e "$path" ]] || fail_missing "$path"
+for required_path in "${required_files[@]}"; do
+  [[ -e "$required_path" ]] || fail_missing "$required_path"
 done
 
 while IFS= read -r role; do
