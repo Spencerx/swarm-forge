@@ -116,6 +116,29 @@
                   (Long/parseLong (or (not-empty audit-count) "0")))))
             (str/split-lines (read-file file))))))
 
+(defn audit-pending-dir [root]
+  (fs/path root ".swarmforge/handoffs/audit_pending"))
+
+(defn audit-sender-dirs [root]
+  (let [dir (audit-pending-dir root)]
+    (if (fs/directory? dir)
+      (->> (fs/list-dir dir)
+           (filter fs/directory?)
+           vec)
+      [])))
+
+(defn empty-audit-sender-dirs [root]
+  (->> (audit-sender-dirs root)
+       (filter (fn [d]
+                 (empty? (filter fs/regular-file? (fs/list-dir d)))))
+       vec))
+
+(defn audit-edn-files [root]
+  (let [dir (audit-pending-dir root)]
+    (if (fs/directory? dir)
+      (vec (fs/glob dir "**/*.edn"))
+      [])))
+
 (defn queued-path [out]
   (some->> (str/split-lines out)
            (some (fn [line]
@@ -642,7 +665,8 @@
       (is (str/includes? (:out result) "MAIL_WAITING"))
       (is (str/includes? content "task_id: jump-id\n"))
       (is (= 1 (board-audit-count root "jump")))
-      (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn")))
+      (is (empty? (audit-edn-files root)))
+      (is (empty? (empty-audit-sender-dirs root)))
       (is (some? (header completed "completed_at")))
       (is (fs/exists? queued-next))
       (is (nil? (header queued-next "dequeued_at"))))))
@@ -742,6 +766,8 @@
     (write-file draft (str valid "unknown: value\n"))
     (is (= 2 (:exit (run (assoc opts :ok? false)
                          (script "swarm_handoff.sh") (str draft)))))
+    (is (empty? (audit-edn-files root)))
+    (is (empty? (empty-audit-sender-dirs root)))
     (write-file draft valid)
     (let [after-repair (run opts (script "swarm_handoff.sh") (str draft))]
       (is (str/includes? (:out after-repair) "AUDIT_REQUIRED"))
@@ -760,13 +786,60 @@
     (write-file receiver-draft "type: git_handoff\nto: sender\npriority: 50\ntask_id: second-id\ntask: second\n")
     (run sender-opts (script "swarm_handoff.sh") (str sender-draft))
     (run receiver-opts (script "swarm_handoff.sh") (str receiver-draft))
-    (is (= 2 (count (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn"))))
+    (is (= 2 (count (audit-edn-files root))))
     (is (some? (queued-path (:out (run sender-opts (script "swarm_handoff.sh")
                                        (str sender-draft))))))
-    (is (= 1 (count (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn"))))
+    (is (= 1 (count (audit-edn-files root))))
+    (is (empty? (empty-audit-sender-dirs root)))
     (is (some? (queued-path (:out (run receiver-opts (script "swarm_handoff.sh")
                                        (str receiver-draft))))))
-    (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/audit_pending") "**/*.edn")))))
+    (is (empty? (audit-edn-files root)))
+    (is (empty? (empty-audit-sender-dirs root)))))
+
+(deftest swarm-handoff-removes-empty-audit-pending-sender-directories
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        draft (fs/path root "tmp" "empty-dirs.handoff")
+        opts {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+        lock (fs/path (audit-pending-dir root) ".lock")]
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: empty-dirs\n")
+    (is (str/includes? (:out (run opts (script "swarm_handoff.sh") (str draft)))
+                       "AUDIT_REQUIRED"))
+    (is (= 1 (count (audit-edn-files root))))
+    (is (= 1 (count (audit-sender-dirs root))))
+    (is (empty? (empty-audit-sender-dirs root)))
+    (is (fs/exists? lock))
+    (is (some? (queued-path (:out (run opts (script "swarm_handoff.sh") (str draft))))))
+    (is (empty? (audit-edn-files root)))
+    (is (empty? (audit-sender-dirs root)))
+    (is (empty? (empty-audit-sender-dirs root)))
+    (is (fs/directory? (audit-pending-dir root)))
+    (is (fs/exists? lock))
+    (doseq [path (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")]
+      (fs/delete-if-exists path))
+    (write-file (fs/path root "next.md") "next\n")
+    (run {:dir root} "git" "add" "next.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Next slice")
+    (write-file draft "type: git_handoff\nto: receiver\npriority: 50\ntask: empty-dirs-next\n")
+    (is (str/includes? (:out (run opts (script "swarm_handoff.sh") (str draft)))
+                       "AUDIT_REQUIRED"))
+    (is (= 1 (count (audit-edn-files root))))
+    (is (= 1 (count (audit-sender-dirs root))))
+    (is (empty? (empty-audit-sender-dirs root)))
+    (write-file (fs/path root "changed.md") "changed\n")
+    (run {:dir root} "git" "add" "changed.md")
+    (run {:dir root} "git" "commit" "-q" "-m" "Change after audit")
+    (is (str/includes? (:out (run opts (script "swarm_handoff.sh") (str draft)))
+                       "AUDIT_REQUIRED"))
+    (is (= 1 (count (audit-edn-files root))))
+    (is (empty? (empty-audit-sender-dirs root)))
+    (is (some? (queued-path (:out (run opts (script "swarm_handoff.sh") (str draft))))))
+    (is (empty? (audit-edn-files root)))
+    (is (empty? (audit-sender-dirs root)))
+    (is (empty? (empty-audit-sender-dirs root)))
+    (is (fs/directory? (audit-pending-dir root)))
+    (is (fs/exists? lock))))
 
 (deftest swarm-handoff-refuses-ambiguous-current-before-queueing
   ;; Given a sender has ambiguous current work

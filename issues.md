@@ -1,79 +1,63 @@
-# Show an audit counter on every task card
+# Remove empty audit_pending directories after a successful handoff
 
 ## Problem
 
-The dashboard does not show how many audit passes a task has accumulated as it
-moves through the squad. The audit challenge is temporary and is deleted after
-a successful handoff, so the current pending-audit state cannot provide a
-cumulative count.
+A Git-handoff audit challenge lives under `.swarmforge/handoffs/audit_pending/`
+as a sender-hash directory containing a task `.edn` file. After a successful
+unchanged submit, the helper deletes the `.edn` file but leaves the sender
+directory behind.
+
+A finished four-squad run left four empty hash directories there. They look
+like stuck audits and accumulate across tasks.
 
 ## Behavior
 
-- Initialize every new timestamped task ID with an audit count of zero.
-- Increment the task's count atomically whenever `swarm_handoff.sh` records a
-  new audit challenge and returns `AUDIT_REQUIRED`.
-- Do not increment for the unchanged second call that submits an audited
-  handoff.
-- A changed candidate that requires another audit increments the count again.
-- Keep the count with the task ID as the card moves between roles and through
-  approval. Rejection and retry preserve the count; deletion removes it.
-- A later task with the same visible name but a new timestamped task ID starts
-  at zero.
-
-Expose the cumulative value as `audit_count` in the dashboard state. Render an
-audit icon and the integer in the top-right of every card, including zero-count,
-rejected, thin, and batched cards. Put it in the title row beside the task name
-so it cannot overlap the name, status text, controls, or batch presentation.
-The icon must have an accessible label and hover tooltip.
+- When an audit challenge is recorded, keep the existing sender-hash directory
+  and task `.edn` file.
+- When that challenge is consumed by a successful unchanged handoff, delete the
+  `.edn` file and remove the sender-hash directory if it is then empty.
+- When a changed candidate invalidates prior challenges, apply the same
+  cleanup: no empty sender-hash directories remain.
+- Do not delete `.swarmforge/handoffs/audit_pending/` itself, or its lock file.
+- A later audit for the same sender may recreate the directory.
 
 ## Verification
 
-Add behavioral coverage for initial zero, first audit, unchanged submission,
-re-audit after a changed candidate, role transition, approval, rejection and
-retry, deletion, and isolation between timestamped task IDs that share a
-visible name. Add dashboard rendering coverage for normal, rejected, thin, and
-batched cards at desktop and mobile widths.
+Cover successful unchanged submit, changed-candidate invalidation, and a second
+audit by the same sender after cleanup. After each successful or invalidated
+challenge, `audit_pending` must contain no empty sender-hash directories. A
+still-pending challenge must keep its directory and `.edn` file.
 
-# Strengthen the handoff audit directive
+# Treat an already-answered clarification as success
 
 ## Problem
 
-The audit gate creates a deliberate pause, but the current directive can be
-satisfied by a mechanical review of formatting, tests, and changed files. An
-agent can complete that review without comparing its work product to the full
-task payload, allowing missing requirements, interactions, boundaries, and
-failure cases to pass through an audited handoff.
+An agent asks the operator with `pack_dashboard_request.sh clarify`. The
+operator answers on the dashboard, which moves the clarification from pending
+to done and injects the answer into the pane.
 
-An audit count records that an audit was requested; it does not establish that
-the audit was semantically complete.
+The agent then runs `pack_dashboard_request.sh answer <clar-id> …` to record
+that it received the answer. That command looks only for a pending *request*,
+not a done clarification, and exits `Unknown pending request`.
+
+In four-squad the specifier hit this after the HHG clarification was already
+answered. The work continued, but the helper reported a failure for a closed
+item.
 
 ## Behavior
 
-When `swarm_handoff.sh` returns `AUDIT_REQUIRED`, direct the agent to:
-
-1. Re-read the complete inbound task payload and every source it references.
-2. Compare the completed work product against every requirement and constraint
-   in that material, including interactions, boundaries, failure cases, and
-   negative requirements.
-3. Establish requirement-to-evidence traceability using evidence appropriate
-   to the agent's assigned responsibilities. Every requirement must be covered
-   by the resulting work, supported by relevant verification, or identified as
-   a gap.
-4. Review the complete committed diff, tests and checks, generated artifacts,
-   and unrelated working-tree changes. Passing tools or clean formatting alone
-   are not evidence that the task is complete.
-5. Fix every finding, commit the corrections, rerun the applicable checks, and
-   repeat the audit against the revised candidate before resubmitting.
-
-Keep this language generic so the same directive applies to every agent and
-lets each role select the work products and verification evidence appropriate
-to its responsibilities. The tool still cannot prove that the review was
-thoughtful, but it must state the semantic standard explicitly rather than
-inviting a narrow mechanical audit.
+- `pack_dashboard_request.sh answer <id>` must succeed when `<id>` is a
+  clarification the operator has already answered.
+- Do not recreate a pending clarification or overwrite the stored operator
+  response.
+- Print a stable success line that names the id.
+- A truly unknown id (never created) still fails.
+- Answering a still-pending operator request is unchanged.
 
 ## Verification
 
-Verify behavior through the stable audit protocol: the first Git handoff call
-must return `AUDIT_REQUIRED` without queueing, and a changed candidate must
-require another audit. Do not pin or search for the directive's prose in an
-automated test.
+Cover: operator answers a clarification, then the originating role runs
+`answer` with that clar id and a local file. The command must exit 0, leave the
+clarification in `done` with the original operator text, and not create a
+pending request. An unknown id must still fail. A pending operator-to-agent
+request must still move to done with the agent's answer.

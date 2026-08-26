@@ -1681,6 +1681,42 @@
         (is (= "Yes, 1 to 20.\nUse all rooms." (:response done)))
         (is (str/includes? stored "response: Yes, 1 to 20.\\nUse all rooms.\n"))))))
 
+(deftest pack-dashboard-request-accepts-an-already-answered-clarification
+  (let [root (tmp-dir)
+        argv-file (str (fs/path root "tmux.argv"))
+        question (fs/path root "tmp" "question.txt")
+        ack (fs/path root "tmp" "answer.txt")]
+    (setup-pack! root ["QA"])
+    (write-file (fs/path root ".swarmforge/tmux-socket") (str (fs/path root "tmux.sock") "\n"))
+    (write-file question "Does the bat drop to any of 20 rooms?\n")
+    (write-file ack "ignored local ack\n")
+    (let [created (run {:dir root :env {"SWARMFORGE_ROLE" "QA"}}
+                       (script "pack_dashboard_request.sh")
+                       "clarify" (str question))
+          id (str/trim (:out created))]
+      (pack-web-env root {"SWARMFORGE_TMUX_STUB" argv-file}
+                    "--test-answer-clarification" (str root) id "Yes, 1 to 20.")
+      (let [acked (run {:dir root :env {"SWARMFORGE_ROLE" "QA"}}
+                       (script "pack_dashboard_request.sh")
+                       "answer" id (str ack))
+            done (first (:clarifications (web-state root)))
+            pending-requests (fs/path root ".swarmforge/dashboard/requests/pending")
+            done-file (first (fs/list-dir
+                              (fs/path root ".swarmforge/dashboard/clarifications/done")))]
+        (is (zero? (:exit acked)))
+        (is (str/includes? (:out acked) (str "ANSWERED: " id)))
+        (is (= "done" (:status done)))
+        (is (= "Yes, 1 to 20." (:response done)))
+        (is (str/includes? (slurp (str done-file)) "response: Yes, 1 to 20.\n"))
+        (is (or (not (fs/directory? pending-requests))
+                (empty? (fs/list-dir pending-requests)))))
+      (let [unknown (run {:dir root :env {"SWARMFORGE_ROLE" "QA"} :ok? false}
+                         (script "pack_dashboard_request.sh")
+                         "answer" "clar-missing" (str ack))]
+        (is (not (zero? (:exit unknown))))
+        (is (str/includes? (str (:err unknown) (:out unknown))
+                           "Unknown pending request"))))))
+
 (deftest pack-web-serves-the-task-body
   ;; Given New Task HTW with body
   ;; When pack_web --test-task HTW

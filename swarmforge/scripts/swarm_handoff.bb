@@ -357,9 +357,19 @@
       (.lock channel)
       (f))))
 
+(defn sender-audit-dir-empty? [dir]
+  (and (fs/directory? dir)
+       (empty? (filter fs/regular-file? (fs/list-dir dir)))))
+
+(defn remove-empty-sender-audit-dir! [sender]
+  (let [dir (sender-audit-dir sender)]
+    (when (sender-audit-dir-empty? dir)
+      (fs/delete-if-exists dir))))
+
 (defn delete-sender-audits! [sender]
   (doseq [path (sender-audit-files sender)]
-    (fs/delete-if-exists path)))
+    (fs/delete-if-exists path))
+  (remove-empty-sender-audit-dir! sender))
 
 (defn invocation-fingerprint [draft sender headers]
   {:sender sender
@@ -379,7 +389,8 @@
       (doseq [path (sender-audit-files sender)
               :let [candidate (:candidate (read-audit path))]
               :when (not= invocation (select-keys candidate (keys invocation)))]
-        (fs/delete-if-exists path)))))
+        (fs/delete-if-exists path))
+      (remove-empty-sender-audit-dir! sender))))
 
 (defn audit-candidate [draft sender headers recipients canonical-commit artifacts]
   {:version 1
