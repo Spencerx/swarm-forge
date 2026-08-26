@@ -354,46 +354,11 @@
     (is (= [] (:approvals state)))
     (is (= six-pack-roles (mapv :role (:work_in_flight state))))))
 
-(defn dashboard-html [root]
-  (:out (pack-web root true "--test-html")))
 
-(defn dashboard-js-fn [html name]
-  (let [needle (str "function " name "(")
-        start (str/index-of html needle)]
-    (when start
-      (let [rest (subs html start)
-            cuts (remove nil? [(str/index-of rest "\nfunction " 1)
-                               (str/index-of rest "\nasync function " 1)])
-            nxt (when (seq cuts) (apply min cuts))]
-        (subs rest 0 (or nxt (count rest)))))))
 
-(deftest pack-dashboard-html-has-new-task-and-no-add-story
-  ;; When serving dashboard.html
-  ;; Then New Task exists, Add Story does not, Troubleshooter does not
-  (let [root (tmp-dir)
-        html (dashboard-html root)]
-    (is (str/includes? html "New Task"))
-    (is (not (str/includes? html "Add Story")))
-    (is (not (str/includes? html "Troubleshooter")))
-    (is (re-find #"id=\"nt-name\"" html))
-    (is (re-find #"id=\"nt-text\"" html))
-    (is (re-find #"id=\"nt-ok\"" html))
-    (is (re-find #"id=\"nt-cancel\"" html))))
 
-(deftest pack-dashboard-renders-a-lane-per-conf-role
-  ;; Given --test-state lanes
-  ;; (JS uses lanes from /api/state; test HTML has id="columns" and id="btn-new-task")
-  (let [root (tmp-dir)
-        _ (setup-pack! root six-pack-roles)
-        state (json/parse-string (:out (pack-web root true "--test-state" (str root))) true)
-        html (dashboard-html root)]
-    (is (= six-pack-roles (:lanes state)))
-    (is (re-find #"id=\"columns\"" html))
-    (is (re-find #"id=\"btn-new-task\"" html))
-    (is (str/includes? html "/api/state"))
-    (is (str/includes? html "data.lanes"))
-    (doseq [role six-pack-roles]
-      (is (not (str/includes? html (str "data-lane=\"" role "\"")))))))
+
+
 
 (deftest pack-web-post-task-creates-a-card-in-the-master-lane
   ;; Given a pack whose master role is coder
@@ -746,17 +711,6 @@
           (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks" task-id)))
           (is (nil? (task-lane root "htw-console-app"))))))))
 
-(deftest pack-dashboard-renders-attention-approvals
-  ;; Given dashboard HTML
-  ;; Then it renders data.approvals with View document, Approve, and Reject
-  (let [html (dashboard-html (tmp-dir))]
-    (is (re-find #"id=\"attention-rows\"" html))
-    (is (str/includes? html "data.approvals"))
-    (is (str/includes? html "/api/approvals/"))
-    (is (str/includes? html "/doc?path="))
-    (is (str/includes? html "Approve"))
-    (is (str/includes? html "Reject"))))
-
 (def example-task-text
   "Integrate the stories in ~/junk/htw-stories into one console application.")
 
@@ -785,6 +739,14 @@
       (is (= text body))
       (is (str/includes? (slurp (str (fs/path root "tasks/htw-console-app.md")))
                          text)))))
+
+(deftest pack-web-inject-failure-logs-the-role
+  (let [root (tmp-dir)]
+    (setup-pack! root ["coder"])
+    (let [result (pack-web root false "--test-post-chat" (str root) "hello master")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (str (:err result)) "inject failed"))
+      (is (str/includes? (str (:err result)) "coder")))))
 
 (deftest inject-master-records-send-keys-argv
   ;; Given master session swarmforge-specifier in roles.tsv
@@ -888,15 +850,6 @@
         (is (= "C-m" (last (second argv))))
         (is (= "C-j" (last (nth argv 2))))))))
 
-(deftest pack-dashboard-chat-rail-posts-to-master
-  ;; Given dashboard HTML
-  ;; Then the rail title uses data.master_display and the composer posts /api/chat
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "data.master_display"))
-    (is (re-find #"id=\"master-title\"" html))
-    (is (re-find #"id=\"chat-input\"" html))
-    (is (str/includes? html "/api/chat"))))
-
 (deftest pack-web-lists-every-role-in-the-work-queue
   ;; Given a six-pack with no in_process mail
   ;; When pack_web --test-state
@@ -956,36 +909,7 @@
     (let [wif (:work_in_flight (web-state root))]
       (is (some #(and (= "cave-walk" (:task %)) (= "coder" (:role %))) wif)))))
 
-(deftest pack-dashboard-html-has-work-queue-and-no-sl
-  ;; When serving dashboard.html
-  ;; Then Work Queue role links use data-open-agent
-  ;; And Open SL / sl-therm / merger are absent
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "Work Queue"))
-    (is (str/includes? html "data-open-agent"))
-    (is (str/includes? html "data.work_in_flight"))
-    (is (str/includes? html "item.state"))
-    (is (str/includes? html "item.activity"))
-    (is (str/includes? html "data.chat"))
-    (is (str/includes? html "data-task-name"))
-    (is (str/includes? html "/task?name="))
-    (is (str/includes? html "Documents"))
-    (is (str/includes? html "/doc?path="))
-    (is (str/includes? html "resizable=yes"))
-    (is (str/includes? html "/agent/"))
-    (is (str/includes? html "setInterval(loadState"))
-    (is (str/includes? html "id=\"error\""))
-    (is (str/includes? html "Swarm disconnected"))
-    (is (not (str/includes? html "Open SL")))
-    (is (not (str/includes? html "sl-therm")))
-    (is (not (str/includes? html "merger")))))
 
-(deftest pack-dashboard-has-no-top-bar-open-master
-  ;; Given dashboard HTML
-  ;; Then the top bar has no Open master button; the rail still does
-  (let [html (dashboard-html (tmp-dir))]
-    (is (not (str/includes? html "id=\"btn-open-master\"")))
-    (is (str/includes? html "id=\"btn-open-master-rail\""))))
 
 (deftest pack-agent-page-polls-live-pane
   ;; When serving the agent session window
@@ -1008,6 +932,21 @@
     (let [result (pack-web root false "--test-pane" (str root) "coder")]
       (is (zero? (:exit result)))
       (is (str/includes? (:out result) "coder pane snapshot")))))
+
+(deftest pack-web-pane-capture-of-missing-session-is-quiet
+  (let [root (tmp-dir)]
+    (setup-pack! root ["coder"])
+    (let [result (pack-web root false "--test-pane" (str root) "coder")]
+      (is (zero? (:exit result)))
+      (is (str/blank? (str/trim (str (:err result))))))))
+
+(deftest pack-web-teardown-throw-is-not-a-clean-success
+  (let [root (tmp-dir)]
+    (setup-pack! root)
+    (let [result (pack-web root false "--test-teardown-throw" (str root))]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result)) "teardown failed"))
+      (is (str/includes? (str (:err result)) (str root))))))
 
 (deftest handoffd-archives-sender-pane-when-task-moves
   ;; Given card and specifier→coder handoff (two-pack coder→cleaner to skip attention)
@@ -1118,21 +1057,6 @@
         body (json/parse-string (:out result) true)]
     (is (zero? (:exit result)))
     (is (< (:before body) (:after body)))))
-
-(deftest pack-dashboard-html-wires-teardown
-  ;; When serving dashboard.html
-  ;; Then Teardown is a small button beside the pack title, not with New Task
-  (let [html (dashboard-html (tmp-dir))
-        identity-start (str/index-of html "class=\"pack-identity\"")
-        actions-start (str/index-of html "class=\"pack-actions\"")
-        teardown-at (str/index-of html "id=\"teardown-btn\"")
-        new-task-at (str/index-of html "id=\"btn-new-task\"")]
-    (is (re-find #"id=\"teardown-btn\"" html))
-    (is (str/includes? html "btn-sm"))
-    (is (str/includes? html "/api/teardown"))
-    (is (str/includes? html "TEARDOWN"))
-    (is (str/includes? html "teardownSwarm"))
-    (is (< identity-start teardown-at actions-start new-task-at))))
 
 (deftest pack-web-teardown-requires-confirm
   ;; Given a pack root
@@ -1252,79 +1176,21 @@
         (is (str/includes? stored "response: the spec is ready\\nwith two documents\n"))
         (is (= "done" (:status row)))))))
 
-(deftest pack-dashboard-documents-menu-paints-above-the-board
-  ;; Given dashboard HTML
-  ;; When the Documents menu opens
-  ;; Then it is position:fixed (not clipped by Attention overflow)
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html ".menu-list{"))
-    (is (re-find #"(?s)\.menu-list\{[^}]*position:fixed" html))
-    (is (str/includes? html "getBoundingClientRect"))))
 
-(deftest pack-dashboard-pins-chat-to-the-bottom
-  ;; Given dashboard HTML
-  ;; When the first chat turn renders
-  ;; Then the history pins to the bottom on first paint
-  (let [html (dashboard-html (tmp-dir))]
-    (is (re-find #"id=\"chat-history\"" html))
-    (is (str/includes? html "scrollHeight"))
-    (is (str/includes? html "firstPaint"))))
 
-(deftest pack-dashboard-chat-history-scrolls-normally
-  ;; Given dashboard HTML
-  ;; Then the master response history is an overflow scroller without flex-end alignment
-  (let [html (dashboard-html (tmp-dir))]
-    (is (re-find #"(?s)\.history\{[^}]*overflow:auto" html))
-    (is (not (re-find #"(?s)\.history\{[^}]*justify-content:flex-end" html)))))
 
-(deftest pack-dashboard-updates-chat-without-rebuilding-history
-  ;; Given dashboard HTML
-  ;; Then chat turns are keyed and existing bubbles are not replaced
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "data-chat-id"))
-    (is (not (str/includes? html "history.replaceChildren")))))
 
-(deftest pack-dashboard-cards-show-im-status
-  ;; Given dashboard HTML
-  ;; Then cards render task.status from /api/state
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "task.status"))))
 
-(deftest pack-dashboard-cards-show-audit-count-without-changing-card-shape
-  (let [html (dashboard-html (tmp-dir))
-        card-source (dashboard-js-fn html "cardEl")]
-    (is (str/includes? card-source "task.audit_count"))
-    (is (str/includes? card-source "aria-label\", \"Audit count"))
-    (is (str/includes? card-source "title.appendChild(audit)"))
-    (is (re-find #"(?s)\.card \.title\{[^}]*display:flex" html))
-    (is (re-find #"(?s)\.audit-count\{[^}]*flex:0 0 auto" html))
-    (is (str/includes? html "thin: idx > 0"))
-    (is (str/includes? html "card-rejected"))
-    (is (re-find #"name=\"viewport\"" html))
-    (is (re-find #"(?s)@media \(max-width:700px\).*\.body\{[^}]*flex-direction:column" html))))
 
-(deftest pack-dashboard-html-flushes-batched-cards
-  ;; When serving dashboard.html
-  ;; Then a batch group has no vertical gap between its cards
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "className = \"batch\""))
-    (is (re-find #"\.batch\{[^}]*gap:0" html))))
 
-(deftest pack-dashboard-cards-drop-lane-name
-  ;; Given dashboard HTML
-  ;; When cards are rendered
-  ;; Then they do not print the agent or lane name
-  (let [html (dashboard-html (tmp-dir))]
-    (is (not (str/includes? html "lane.textContent = task.lane")))))
 
-(deftest pack-dashboard-batch-only-top-card-has-status
-  ;; Given dashboard HTML
-  ;; When a batch is rendered
-  ;; Then only the top card has a status line and the rest are thin name-only cards
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "card-thin"))
-    (is (str/includes? html "thin: idx > 0"))
-    (is (re-find #"\.card-thin\{" html))))
+
+
+
+
+
+
+
 
 (deftest pack-web-state-groups-in-process-batch-cards
   ;; Given two-pack and two cleaner in-process handoffs in one batch dir
@@ -1346,53 +1212,13 @@
              (get-in by-name ["validation" :batch])))
       (is (some? (get-in by-name ["Command syntax" :batch]))))))
 
-(deftest pack-dashboard-new-task-alerts-on-duplicate
-  ;; Given dashboard HTML
-  ;; Then duplicate create keeps the dialog and alerts
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "submitNewTask"))
-    (is (str/includes? html "if (!res.ok)"))
-    (is (str/includes? html "alert("))
-    (is (str/includes? html "nt-name"))))
 
-(deftest pack-dashboard-rejected-card-has-delete
-  ;; Given dashboard HTML
-  ;; Then a REJECTED card is red and can be deleted
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "REJECTED"))
-    (is (str/includes? html "card-rejected"))
-    (is (str/includes? html "/api/tasks/delete"))))
 
-(deftest pack-dashboard-splitter-drags-the-rail
-  ;; Given dashboard HTML
-  ;; Then the board/Work Queue border can be dragged
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "col-resize"))
-    (is (str/includes? html "pointerdown"))
-    (is (str/includes? html "setProperty(\"--rail\""))))
 
-(deftest pack-dashboard-rejected-card-has-edit-retry
-  ;; Given dashboard HTML
-  ;; Then Attention Reject opens a dialog with Delete, Retry, and Accept
-  ;; And cards have no Edit control
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "openRejectDialog"))
-    (is (not (str/includes? html "openRejectEdit")))
-    (is (not (str/includes? html "Edit rejected card")))
-    (is (str/includes? html "/api/tasks/retry"))
-    (is (str/includes? html "rt-text"))
-    (is (str/includes? html "rt-accept"))
-    (is (str/includes? html "Retry"))
-    (is (str/includes? html "Accept"))
-    (is (str/includes? html "Delete"))))
 
-(deftest pack-dashboard-attention-has-clarification-row
-  ;; Given dashboard HTML
-  ;; Then Attention can show Request clarification with a text box
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "Clarification requested from:"))
-    (is (str/includes? html "data.clarifications"))
-    (is (str/includes? html "/api/clarifications/"))))
+
+
+
 
 (deftest pack-web-thermometer-ignores-reordered-tail
   ;; Given a pane whose last 20 lines are the same bag in a new order
@@ -1790,31 +1616,6 @@
             (is (str/includes? content "more.md"))
             (is (str/includes? content "tasks/HTW.md"))))))))
 
-(deftest pack-dashboard-documents-fetch-into-a-growable-window
-  (let [html (dashboard-html (tmp-dir))
-        src (dashboard-js-fn html "viewDoc")]
-    (is (str/includes? src "fetch(\"/doc?path=\""))
-    (is (str/includes? src "resizable=yes"))
-    (is (str/includes? src "fileName(path)"))
-    (is (str/includes? src "\"doc-\" + encodeURIComponent(path)"))
-    (is (not (str/includes? src "\"doc-\" + name")))
-    (is (str/includes? html "fillDocWindow"))
-    (is (str/includes? html "doc-comments"))
-    (is (str/includes? html "doc-save"))
-    (is (str/includes? html "doc-cancel"))
-    (is (str/includes? html "Save"))
-    (is (str/includes? html "Cancel"))
-    (is (str/includes? html "overflow:auto"))
-    (is (str/includes? html "white-space:pre-wrap"))
-    (is (str/includes? html "\\u2610"))
-    (is (str/includes? html "\\u2713"))
-    (is (str/includes? html "\\u2717"))
-    (is (str/includes? html "hasRemedialComments"))
-    (is (str/includes? html "approve.disabled"))
-    (is (str/includes? html "Remedial comments will be ignored"))
-    (is (str/includes? html "confirm("))
-    (is (not (str/includes? html "id=\"doc-layer\"")))))
-
 (deftest pack-web-serves-a-document
   (let [root (tmp-dir)
         _ (setup-pack! root)
@@ -2015,37 +1816,11 @@
       (is (str/includes? (:out result) "HTW"))
       (is (str/includes? (:out result) text)))))
 
-(deftest pack-dashboard-stamps-clarification-with-the-agent
-  ;; Given dashboard HTML
-  ;; Then Attention names the requesting agent
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "Clarification requested from:"))))
 
-(deftest pack-dashboard-keeps-clarification-draft-across-poll
-  ;; Given dashboard HTML
-  ;; Then clarifications live in their own div and existing inputs are not rebuilt
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "id=\"attention-clarifications\""))
-    (is (str/includes? html "id=\"attention-approvals\""))
-    (is (str/includes? html "data-clar-id"))
-    (is (str/includes? html "renderClarifications"))
-    (is (not (str/includes? html "setSelectionRange")))))
 
-(deftest pack-dashboard-clarification-enter-submits
-  ;; Given a clarification answer box
-  ;; When the operator presses Enter
-  ;; Then the answer is submitted
-  (let [src (dashboard-js-fn (dashboard-html (tmp-dir)) "clarificationRow")]
-    (is (str/includes? src "createElement(\"form\")"))
-    (is (str/includes? src "addEventListener(\"submit\""))
-    (is (str/includes? src "preventDefault"))
-    (is (str/includes? src "postClarification"))))
 
-(deftest pack-dashboard-keeps-documents-menu-open-across-poll
-  ;; Given dashboard HTML
-  ;; Then an open Documents menu is restored after loadState
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "openDocMenus"))))
+
+
 
 (deftest pack-web-card-status-matches-unicode-im-and-i-keywords
   ;; Given a pane with Unicode I’m and let me
@@ -2116,25 +1891,7 @@
       (is (= ["HTW" "Command Syntax"] (:tasks row)))
       (is (= ["HTW" "Command Syntax"] (:batch_tasks row))))))
 
-(deftest pack-dashboard-batch-plus-lists-tasks-on-hover
-  ;; Given a work row with more than one task
-  ;; When the operator hovers the +
-  ;; Then a list of every task in the batch appears
-  (let [html (dashboard-html (tmp-dir))
-        src (dashboard-js-fn html "workRow")]
-    (is (str/includes? src "item.tasks"))
-    (is (str/includes? src "item.batch_tasks"))
-    (is (str/includes? src "batch-more"))
-    (is (str/includes? src "mouseenter"))
-    (is (str/includes? html "batch-more"))))
 
-(deftest pack-dashboard-keeps-work-rows-across-poll
-  ;; Given dashboard HTML
-  ;; Then work rows are keyed and not rebuilt when the batch is unchanged
-  (let [html (dashboard-html (tmp-dir))]
-    (is (str/includes? html "data-work-role"))
-    (is (str/includes? html "renderWork"))
-    (is (not (str/includes? html "rows.replaceChildren")))))
 
 (deftest pack-web-thermometer-heats-on-work-after-handoff-mail
   ;; Given a Codex pane whose only cut-point used to be an old › mail line

@@ -197,17 +197,17 @@ swarmforge/constitution/articles/
   workflow.prompt
 ```
 
-At startup, SwarmForge installs missing shared articles into the runnable branch's `swarmforge/constitution/articles/` directory before creating role worktrees. It also installs missing shared articles into each role worktree during script synchronization. Existing local files are skipped, so a runnable branch can override a shared article by committing an article with the same filename.
+`get-swarm-forge` always copies shared articles from `main` (or `SWARMFORGE_BASE_BRANCH`). Packs must not ship `engineering.prompt`, `workflow.prompt`, or `handoffs.prompt`. Those filenames are law from `main`.
 
-Pack-specific additions and exceptions should use explicit local filenames rather than editing shared articles. Current conventions are:
+Pack-specific additions and exceptions use explicit local filenames:
 
 - `project.prompt` for the workflow's project shape and local topology.
 - `local-engineering.prompt` for workflow-specific engineering rules.
 - `local-workflow.prompt` for workflow-specific flow rules.
 
-The `local-*.prompt` naming convention means "add to or specialize the shared default article for this runnable branch." Use it when the shared article remains valid and the branch only needs extra requirements, exceptions, or narrower instructions. Do not use `local-*.prompt` for a full replacement; use the shared filename instead when the branch intentionally overrides the shared article.
+The `local-*.prompt` naming convention means "add to or specialize the shared default article for this pack." Use it for extra requirements, exceptions, or narrower instructions. Do not replace a shared article by committing the same filename.
 
-For example, `main` can provide a shared `workflow.prompt`, while `six-pack` can add `local-workflow.prompt` for QA-specific handoff behavior. If a branch needs to replace the shared workflow article completely, it can commit its own `workflow.prompt`; startup will treat that local file as an override and will not copy the shared one over it.
+For example, `main` provides `workflow.prompt`, while `six-pack` adds `local-workflow.prompt` for QA-specific handoff behavior.
 
 ## Roles
 
@@ -218,12 +218,12 @@ Each role in `swarmforge/swarmforge.conf` maps to a corresponding `swarmforge/ro
 In a runnable branch:
 
 1. SwarmForge reads `swarmforge/swarmforge.conf`.
-2. The root `./swarm` wrapper copies shared helper scripts, terminal adapters, and shared constitution articles from the `main` branch when they are not already present.
-3. Startup installs missing shared constitution articles into `swarmforge/constitution/articles/`, skipping any local article file that already exists.
+2. The project is already composed by `get-swarm-forge`: shared helper scripts and `engineering.prompt` / `workflow.prompt` / `handoffs.prompt` from `main`, plus pack-owned files (`swarm`, `swarmforge.conf`, role prompts, `constitution.prompt`, `project.prompt`, `local-*.prompt`). Shared article filenames are never taken from the pack.
+3. Startup uses that composed `swarmforge/constitution/articles/` tree. Pack specialization is `local-*.prompt` and other pack-owned files, not a same-name override of a shared article.
 4. Startup validates the configured role prompts, helper scripts, and terminal adapters.
 5. If the target directory is not already a git repository, startup initializes one and creates the first commit.
 6. Startup creates one git worktree per configured role under `.worktrees/`, unless the role is assigned to `master` or `none`.
-7. Startup syncs `swarmforge/scripts/` and missing shared constitution articles into each role worktree and puts that local scripts directory on each agent's `PATH`, so agents use local handoff helpers without reaching back into the master checkout.
+7. Startup copies the composed `swarmforge/scripts/` and `swarmforge/constitution/` trees into each role worktree and puts that local scripts directory on each agent's `PATH`, so agents use local handoff helpers without reaching back into the master checkout.
 8. SwarmForge creates tmux sessions, launches each configured backend in its assigned worktree, starts the pack dashboard, and opens a Terminal surface only for `window` (visible) roles.
 9. Startup starts an OS-specific sleep inhibitor when one is available, and cleanup stops it with the swarm.
 10. Roles communicate through daemon-delivered handoff files. Agents create validated drafts with `swarm_handoff.sh`, accept work with `ready_for_next.sh`, and complete work with `done_with_current.sh`.

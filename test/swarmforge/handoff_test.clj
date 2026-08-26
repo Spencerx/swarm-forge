@@ -340,6 +340,57 @@
         (is (str/includes? (:err result) "does not match current in-process task_id"))
         (is (empty? (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")))))))
 
+(deftest swarm-handoff-fills-task-id-from-in-process-name-only-draft
+  (let [root (tmp-dir)
+        commit (init-repo! root)
+        hidden "20260826T162611432618Z-htw"]
+    (setup-project! root)
+    (write-file (fs/path root ".swarmforge/board/tasks.tsv")
+                (str "HTW\tcoder\tcreated\tupdated\t" hidden "\n"
+                     "extras\tsender\tcreated\tupdated\textras-id\n"))
+    (put-handoff! root "in_process" "50_retry.handoff"
+                  {:id "retry"
+                   :from "(Retry)"
+                   :to "sender"
+                   :recipient "sender"
+                   :priority "50"
+                   :type "note"
+                   :task-id hidden
+                   :task "HTW"})
+    (let [draft (fs/path root "tmp" "htw.handoff")]
+      (write-file draft (format "type: git_handoff\nto: receiver\npriority: 50\ntask: HTW\ncommit: %s\n" commit))
+      (let [result (audit-and-submit-git-handoff
+                    {:dir root :env {"SWARMFORGE_ROLE" "sender"}} draft)
+            queued (queued-path (:out result))
+            content (when queued (read-file queued))]
+        (is (zero? (:exit result)))
+        (is (some? queued))
+        (is (str/includes? (str content) (str "task_id: " hidden "\n")))
+        (is (str/includes? (str content) "task: HTW\n"))
+        (is (not (str/includes? (str (:err result) (:out result)) "does not match")))))))
+
+(deftest swarm-handoff-help-does-not-require-draft-task-id
+  (let [result (run {:dir repo-root :ok? false}
+                    (script "swarm_handoff.sh") "--help")
+        text (str (:err result) (:out result))]
+    (is (zero? (:exit result)))
+    (is (str/includes? text "task: <short-stable-task-name>"))
+    (is (not (str/includes? text "task_id: <hidden-task-id>")))))
+
+(deftest pack-board-project-root-from-worktree-matches-handoff-lib
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        wt (add-worktree! root "coder")
+        _ (setup-project! root {"coder" "task"})
+        _ (write-file (fs/path root ".swarmforge" "roles.tsv")
+                      (format "coder\tmaster\t%s\tsession\tCoder\tcodex\ttask\n" wt))]
+    (run {:dir root} (script "pack_board.sh") "create" "--name" "HTW" "--lane" "coder" "--root" (str root))
+    (let [from-lib (run {:dir wt} (script "handoff_lib.bb") "project-root")
+          listed (run {:dir wt} (script "pack_board.sh") "list")]
+      (is (= (str (fs/canonicalize root))
+             (str (fs/canonicalize (str/trim (:out from-lib))))))
+      (is (str/includes? (:out listed) "HTW")))))
+
 (deftest ready-for-next-prints-note-task-name-and-body
   ;; Given a (New Task) note in the receiver inbox
   ;; When ready_for_next runs

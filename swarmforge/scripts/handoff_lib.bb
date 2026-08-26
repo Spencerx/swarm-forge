@@ -176,7 +176,12 @@
 (defn finish-done! []
   (try
     (archive-current-role!)
-    (catch Exception _))
+    (catch Exception e
+      (binding [*out* *err*]
+        (println (str "archive failed role=" (try (role) (catch Exception _ "?"))
+                      " root=" (try (str (project-root)) (catch Exception _ "?"))
+                      " error=" (.getMessage e)))
+        (flush))))
   (announce-follow-up!))
 
 (defn next-sequence []
@@ -232,4 +237,5 @@
         (println (ex-message e)))
       (System/exit (or (:exit (ex-data e)) 1)))))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

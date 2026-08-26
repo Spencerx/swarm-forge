@@ -891,3 +891,128 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest ready-for-next-treats-blank-receive-mode-as-task
+  (let [root (tmp-dir)]
+    (try
+      (init-repo! root)
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "sender\tmaster\t%s\tsession\tSender\tcodex\t\n" root))
+      (doseq [dir [".swarmforge/handoffs/outbox/tmp"
+                   ".swarmforge/handoffs/sent"
+                   ".swarmforge/handoffs/failed"
+                   ".swarmforge/handoffs/inbox/new"
+                   ".swarmforge/handoffs/inbox/in_process"
+                   ".swarmforge/handoffs/inbox/completed"]]
+        (fs/create-dirs (fs/path root dir)))
+      (let [mode (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "handoff_lib.bb") "role-receive-mode" "sender")
+            ready (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                       (script "ready_for_next.sh"))]
+        (is (str/includes? (:out mode) "task"))
+        (is (zero? (:exit ready)))
+        (is (str/includes? (:out ready) "NO_TASK")))
+      (write-file (fs/path root ".swarmforge/handoffs/inbox/in_process/50_item.handoff")
+                  (str "id: 1\n"
+                       "from: sender\n"
+                       "to: sender\n"
+                       "priority: 50\n"
+                       "type: note\n"
+                       "task: HTW\n"
+                       "\n"
+                       "body\n"))
+      (let [done (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                      (script "done_with_current.sh"))]
+        (is (zero? (:exit done)))
+        (is (str/includes? (:out done) "COMPLETED:"))
+        (is (re-find #"MAIL_WAITING|NO_TASK" (:out done))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest ready-for-next-unknown-role-fails
+  (let [root (tmp-dir)]
+    (try
+      (init-repo! root)
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "sender\tmaster\t%s\tsession\tSender\tcodex\ttask\n" root))
+      (let [ready (run {:dir root :env {"SWARMFORGE_ROLE" "ghost"} :ok? false}
+                       (script "ready_for_next.sh"))
+            done (run {:dir root :env {"SWARMFORGE_ROLE" "ghost"} :ok? false}
+                      (script "done_with_current.sh"))]
+        (is (not (zero? (:exit ready))))
+        (is (str/includes? (str (:err ready) (:out ready)) "Unknown role"))
+        (is (not (zero? (:exit done))))
+        (is (str/includes? (str (:err done) (:out done)) "Unknown role")))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest finish-done-logs-archive-throw-and-still-announces
+  (let [root (tmp-dir)
+        lib (fs/path root "handoff_lib.bb")]
+    (try
+      (init-repo! root)
+      (write-file (fs/path root ".swarmforge/roles.tsv")
+                  (format "sender\tmaster\t%s\tsession\tSender\tcodex\ttask\n" root))
+      (fs/create-dirs (fs/path root ".swarmforge/handoffs/inbox/new"))
+      (fs/copy (script "handoff_lib.bb") lib)
+      (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"} :ok? false}
+                        "bb" (str lib) "finish-done")]
+        (is (zero? (:exit result)))
+        (is (re-find #"MAIL_WAITING|NO_TASK" (:out result)))
+        (is (str/includes? (str (:err result)) "archive failed"))
+        (is (str/includes? (str (:err result)) "sender"))
+        (is (str/includes? (str (:err result)) (str root))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest pack-web-production-main-does-not-run-test-flags
+  (let [result (run {:dir repo-root :ok? false}
+                    "bb" (script "pack_web.bb") "--test-html")]
+    (is (not (zero? (:exit result))))
+    (is (str/includes? (slurp (script "pack_web.bb")) "--serve"))
+    (is (not (re-find #"--test-state\" \(test-state!" (slurp (script "pack_web.bb")))))
+    (is (str/includes? (slurp (script "pack_web_test.bb")) "--test-state"))))
+
+(deftest get-swarm-forge-copies-only-swarmforge-owned-paths
+  (let [host (tmp-dir)
+        base (tmp-dir)
+        pack (tmp-dir)]
+    (try
+      (write-file (fs/path host "README.md") "host-readme\n")
+      (write-file (fs/path host "bb.edn") "{:paths [\"test\"]}\n")
+      (write-file (fs/path host "test/keep.clj") "keep\n")
+      (doseq [name ["swarmforge.sh" "handoffd.bb" "done_with_current.sh"]]
+        (write-file (fs/path base "swarmforge/scripts" name) (str name "\n")))
+      (write-file (fs/path base "swarmforge/constitution/articles/engineering.prompt") "MAIN-ENGINEERING\n")
+      (write-file (fs/path base "swarmforge/constitution/articles/workflow.prompt") "MAIN-WORKFLOW\n")
+      (write-file (fs/path base "swarmforge/constitution/articles/handoffs.prompt") "MAIN-HANDOFFS\n")
+      (write-file (fs/path pack "swarm") "#!/bin/sh\necho swarm\n")
+      (write-file (fs/path pack "README.md") "pack-readme\n")
+      (write-file (fs/path pack "bb.edn") "pack-bb\n")
+      (write-file (fs/path pack "swarmforge/swarmforge.conf") "window specifier master session Specifier codex task\n")
+      (write-file (fs/path pack "swarmforge/constitution.prompt") "PACK-CONSTITUTION\n")
+      (write-file (fs/path pack "swarmforge/roles/specifier.prompt") "specifier\n")
+      (write-file (fs/path pack "swarmforge/constitution/articles/engineering.prompt") "PACK-STALE-ENGINEERING\n")
+      (write-file (fs/path pack "swarmforge/constitution/articles/project.prompt") "PACK-PROJECT\n")
+      (write-file (fs/path pack "swarmforge/constitution/articles/local-workflow.prompt") "PACK-LOCAL-WORKFLOW\n")
+      (let [result (run {:dir host
+                         :env {"SWARMFORGE_BASE_DIR" (str base)
+                               "SWARMFORGE_PACK_DIR" (str pack)}}
+                        (str (fs/path repo-root "get-swarm-forge"))
+                        "two-pack")]
+        (is (zero? (:exit result)))
+        (is (= "host-readme\n" (slurp (str (fs/path host "README.md")))))
+        (is (= "{:paths [\"test\"]}\n" (slurp (str (fs/path host "bb.edn")))))
+        (is (= "keep\n" (slurp (str (fs/path host "test/keep.clj")))))
+        (is (= "MAIN-ENGINEERING\n" (slurp (str (fs/path host "swarmforge/constitution/articles/engineering.prompt")))))
+        (is (= "MAIN-WORKFLOW\n" (slurp (str (fs/path host "swarmforge/constitution/articles/workflow.prompt")))))
+        (is (= "MAIN-HANDOFFS\n" (slurp (str (fs/path host "swarmforge/constitution/articles/handoffs.prompt")))))
+        (is (= "PACK-PROJECT\n" (slurp (str (fs/path host "swarmforge/constitution/articles/project.prompt")))))
+        (is (= "PACK-LOCAL-WORKFLOW\n" (slurp (str (fs/path host "swarmforge/constitution/articles/local-workflow.prompt")))))
+        (is (= "PACK-CONSTITUTION\n" (slurp (str (fs/path host "swarmforge/constitution.prompt")))))
+        (is (fs/exists? (fs/path host "swarmforge/roles/specifier.prompt")))
+        (is (fs/exists? (fs/path host "swarm"))))
+      (finally
+        (fs/delete-tree host)
+        (fs/delete-tree base)
+        (fs/delete-tree pack)))))
+

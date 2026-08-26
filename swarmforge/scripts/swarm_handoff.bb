@@ -19,10 +19,9 @@
        "type: git_handoff\n"
        "to: <role>[,<role>...]\n"
        "priority: NN\n"
-       "task_id: <hidden-task-id>\n"
        "task: <short-stable-task-name>\n\n"
-       "The helper fills priority 50, commit, and artifacts from the sender worktree HEAD.\n"
-       "Do not type a SHA. Extra headers (coverage, CRAP) are invalid.\n"
+       "The helper fills priority 50, commit, artifacts, and task_id from current work or the board card.\n"
+       "Do not type a SHA or a hidden task_id. Extra headers (coverage, CRAP) are invalid.\n"
        "Extra lines after the headers are ignored.\n\n"
        "type: note\n"
        "to: <role>[,<role>...]\n"
@@ -34,6 +33,7 @@
 (def allowed-fields #{"type" "to" "priority" "task_id" "task" "commit" "message"})
 (def allowed-types #{"git_handoff" "note"})
 (def script-dir (fs/parent *file*))
+(load-file (str (fs/path script-dir "handoff_lib.bb")))
 
 (defn usage []
   (binding [*out* *err*]
@@ -50,69 +50,63 @@
    (let [result (apply sh (concat args [:dir (str dir)]))]
      result)))
 
+(defn lib-fail [e]
+  (exit! (or (:exit (ex-data e)) 1) (ex-message e)))
+
 (defn git-root []
-  (let [result (command "." "git" "rev-parse" "--show-toplevel")]
-    (when (zero? (:exit result))
-      (str/trim (:out result)))))
+  (handoff-lib/git-toplevel))
 
 (defn git-common-dir []
-  (let [result (command "." "git" "rev-parse" "--git-common-dir")]
-    (when (zero? (:exit result))
-      (let [path (str/trim (:out result))]
-        (if (fs/absolute? path)
-          (str (fs/path path))
-          (str (fs/absolutize path)))))))
+  (handoff-lib/git-common-dir))
 
 (defn roles-at? [root]
-  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+  (handoff-lib/roles-at? root))
 
 (defn project-root []
-  (or (let [common (git-common-dir)
-            parent (when common (str (fs/parent common)))]
-        (when (roles-at? parent) parent))
-      (when (roles-at? (git-root)) (git-root))
-      (when (roles-at? (fs/cwd)) (str (fs/cwd)))
-      (exit! 1 "Cannot find SwarmForge project root")))
+  (try
+    (handoff-lib/project-root)
+    (catch clojure.lang.ExceptionInfo e
+      (lib-fail e))))
 
 (defn roles-file []
-  (fs/path (project-root) ".swarmforge" "roles.tsv"))
+  (handoff-lib/roles-file))
 
 (defn role-known? [role]
-  (some (fn [line]
-          (= role (first (str/split line #"\t"))))
-        (str/split-lines (slurp (str (roles-file))))))
+  (try
+    (handoff-lib/role-known? role)
+    (catch clojure.lang.ExceptionInfo e
+      (lib-fail e))))
 
 (defn same-path? [a b]
-  (try
-    (= (str (fs/canonicalize a)) (str (fs/canonicalize b)))
-    (catch Exception _
-      (= (str a) (str b)))))
+  (handoff-lib/same-path? a b))
 
 (defn infer-role-from-worktree []
-  (let [here (or (git-root) (str (fs/absolutize ".")))]
-    (some (fn [line]
-            (let [cols (str/split line #"\t")
-                  role (first cols)
-                  wt (when (>= (count cols) 3) (nth cols 2))]
-              (when (and (not-empty role) (not-empty wt) (same-path? wt here))
-                role)))
-          (str/split-lines (slurp (str (roles-file)))))))
+  (handoff-lib/infer-role-from-worktree))
 
 (defn sender-role []
-  (or (not-empty (System/getenv "SWARMFORGE_ROLE"))
-      (infer-role-from-worktree)
-      (exit! 1 "Set SWARMFORGE_ROLE.")))
+  (try
+    (handoff-lib/role)
+    (catch clojure.lang.ExceptionInfo e
+      (lib-fail e))))
 
-(defn board-cards-in-lane [lane]
+(defn board-cards []
   (let [file (fs/path (project-root) ".swarmforge" "board" "tasks.tsv")]
     (if (fs/exists? file)
       (into []
             (keep (fn [line]
                     (let [[name task-lane _created _updated task-id] (str/split line #"\t" -1)]
-                      (when (= lane task-lane)
-                        {:name name :id (or (not-empty task-id) name)}))))
+                      (when (not (str/blank? name))
+                        {:name name
+                         :lane task-lane
+                         :id (or (not-empty task-id) name)}))))
             (str/split-lines (slurp (str file))))
       [])))
+
+(defn board-cards-in-lane [lane]
+  (filterv #(= lane (:lane %)) (board-cards)))
+
+(defn board-card-named [name]
+  (some #(when (= name (:name %)) %) (board-cards)))
 
 (defn in-process-dir []
   (fs/path (System/getProperty "user.dir") ".swarmforge" "handoffs" "inbox" "in_process"))
@@ -164,6 +158,10 @@
   (when-let [file (first (in-process-task-files))]
     (handoff-task-id file)))
 
+(defn current-in-process-task []
+  (when-let [file (first (in-process-task-files))]
+    (header-field file "task")))
+
 (defn current-task-base []
   (when-let [file (first (in-process-task-files))]
     (header-field file "task_base_commit")))
@@ -213,13 +211,27 @@
         (assoc headers "task_id" (:id card) "task" (:name card)))
       :else headers)))
 
+(defn with-in-process-task [headers]
+  (let [id (not-empty (current-in-process-task-id))
+        name (not-empty (current-in-process-task))]
+    (cond-> headers
+      id (assoc "task_id" id)
+      name (assoc "task" name))))
+
 (defn with-board-task [headers sender]
   (if-not (= "git_handoff" (get headers "type"))
     headers
-    (if-let [batch-task-id (not-empty (top-batch-task-id))]
-      (cond-> (assoc headers "task_id" batch-task-id)
-        (not-empty (top-batch-task)) (assoc "task" (top-batch-task)))
-      (with-lane-task headers sender))))
+    (cond
+      (not (str/blank? (get headers "task_id"))) headers
+      (not-empty (current-in-process-task-id)) (with-in-process-task headers)
+      :else (let [card (board-card-named (get headers "task"))
+                  filled (if card
+                           (assoc headers "task_id" (:id card) "task" (:name card))
+                           (with-lane-task headers sender))]
+              (if (and (str/blank? (get filled "task_id"))
+                       (not (str/blank? (get filled "task"))))
+                (assoc filled "task_id" (get filled "task"))
+                filled)))))
 
 (defn pack-role-names []
   (->> (str/split-lines (slurp (str (roles-file))))
@@ -461,18 +473,10 @@
     headers
     (assoc headers "priority" "50")))
 
-(defn fill-task-id [headers]
-  (if (and (= "git_handoff" (get headers "type"))
-           (str/blank? (get headers "task_id"))
-           (not (str/blank? (get headers "task"))))
-    (assoc headers "task_id" (get headers "task"))
-    headers))
-
 (defn prepare-headers [headers sender]
   (-> headers
       fill-commit
       (with-board-task sender)
-      fill-task-id
       (with-non-forwarding sender)
       fill-priority))
 

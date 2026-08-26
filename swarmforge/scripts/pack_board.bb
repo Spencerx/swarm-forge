@@ -26,6 +26,8 @@
        "  pack_board.sh delete <name>"))
 
 (def flags {"--root" :root "--name" :name "--lane" :lane "--text" :text "--role" :role "--task-id" :task-id})
+(def script-dir (fs/parent *file*))
+(load-file (str (fs/path script-dir "handoff_lib.bb")))
 
 (defn usage []
   (binding [*out* *err*]
@@ -41,27 +43,19 @@
   (apply sh (concat args [:dir (str dir)])))
 
 (defn git-root []
-  (let [result (command "." "git" "rev-parse" "--show-toplevel")]
-    (when (zero? (:exit result))
-      (str/trim (:out result)))))
+  (handoff-lib/git-toplevel))
 
 (defn git-common-dir []
-  (let [result (command "." "git" "rev-parse" "--git-common-dir")]
-    (when (zero? (:exit result))
-      (let [path (str/trim (:out result))]
-        (if (fs/absolute? path)
-          (str (fs/path path))
-          (str (fs/absolutize path)))))))
+  (handoff-lib/git-common-dir))
 
 (defn roles-at? [root]
-  (and root (fs/exists? (fs/path root ".swarmforge" "roles.tsv"))))
+  (handoff-lib/roles-at? root))
 
 (defn project-root []
-  (or (let [parent (some-> (git-common-dir) fs/parent str)]
-        (when (roles-at? parent) parent))
-      (when (roles-at? (git-root)) (git-root))
-      (when (roles-at? (fs/cwd)) (str (fs/cwd)))
-      (exit! 1 "Cannot find SwarmForge project root")))
+  (try
+    (handoff-lib/project-root)
+    (catch clojure.lang.ExceptionInfo e
+      (exit! (or (:exit (ex-data e)) 1) (ex-message e)))))
 
 (defn parse-args [args]
   (loop [args args opts {} positionals []]

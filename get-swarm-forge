@@ -51,11 +51,15 @@ fail_missing() {
   exit 1
 }
 
-base_dir="$tmp_dir/base"
-pack_dir="$tmp_dir/pack"
+base_dir="${SWARMFORGE_BASE_DIR:-$tmp_dir/base}"
+pack_dir="${SWARMFORGE_PACK_DIR:-$tmp_dir/pack}"
 
-download_branch "$base_branch" "$base_dir"
-download_branch "$branch" "$pack_dir"
+if [[ -z "${SWARMFORGE_BASE_DIR:-}" ]]; then
+  download_branch "$base_branch" "$base_dir"
+fi
+if [[ -z "${SWARMFORGE_PACK_DIR:-}" ]]; then
+  download_branch "$branch" "$pack_dir"
+fi
 
 [[ -d "$base_dir/swarmforge/scripts" ]] || fail_missing "swarmforge/scripts from $base_branch"
 [[ -d "$base_dir/swarmforge/constitution/articles" ]] || fail_missing "swarmforge/constitution/articles from $base_branch"
@@ -65,12 +69,29 @@ download_branch "$branch" "$pack_dir"
 
 rm -rf swarmforge .worktrees .swarmforge
 
-mkdir -p swarmforge
+mkdir -p swarmforge/constitution/articles
 cp -R "$base_dir/swarmforge/scripts" swarmforge/scripts
-mkdir -p swarmforge/constitution
-cp -R "$base_dir/swarmforge/constitution/articles" swarmforge/constitution/articles
+for shared_article in engineering.prompt workflow.prompt handoffs.prompt; do
+  [[ -f "$base_dir/swarmforge/constitution/articles/$shared_article" ]] \
+    && cp "$base_dir/swarmforge/constitution/articles/$shared_article" \
+         "swarmforge/constitution/articles/$shared_article"
+done
 
-cp -R "$pack_dir"/. .
+cp "$pack_dir/swarm" swarm
+cp "$pack_dir/swarmforge/swarmforge.conf" swarmforge/swarmforge.conf
+[[ -f "$pack_dir/swarmforge/constitution.prompt" ]] \
+  && cp "$pack_dir/swarmforge/constitution.prompt" swarmforge/constitution.prompt
+cp -R "$pack_dir/swarmforge/roles" swarmforge/roles
+if [[ -d "$pack_dir/swarmforge/constitution/articles" ]]; then
+  for pack_article in "$pack_dir/swarmforge/constitution/articles"/*; do
+    [[ -f "$pack_article" ]] || continue
+    article_name="${pack_article:t}"
+    case "$article_name" in
+      engineering.prompt|workflow.prompt|handoffs.prompt) continue ;;
+    esac
+    cp "$pack_article" "swarmforge/constitution/articles/$article_name"
+  done
+fi
 
 required_files=(
   swarm

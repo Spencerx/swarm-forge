@@ -132,8 +132,15 @@
     (let [socket (tmux-socket root)
           target (when-let [row (role-row root role)]
                    (pane-target row))]
+      (when-not (and socket target)
+        (throw (ex-info "missing tmux target" {:role role :socket socket})))
       (inject-target! socket target text))
-    (catch Exception _)))
+    (catch Exception e
+      (binding [*out* *err*]
+        (println (str "inject failed role=" role
+                      " socket=" (tmux-socket root)
+                      " error=" (.getMessage e)))
+        (flush)))))
 
 (defn inject-master! [root text]
   (when-let [row (master-row root)]
@@ -1341,15 +1348,27 @@
   (stop-pack-web! root)
   true)
 
+(defn log-teardown-failure! [root e]
+  (binding [*out* *err*]
+    (println (str "teardown failed root=" root
+                  " error=" (.getMessage e)))
+    (flush)))
+
 (defn schedule-teardown! [root]
   (if *sync-teardown?*
-    (run-teardown! root)
+    (try
+      (run-teardown! root)
+      (catch Exception e
+        (log-teardown-failure! root e)
+        (exit! 1 nil)))
     (future
       (Thread/sleep teardown-delay-ms)
       (try
         (run-teardown! root)
-        (catch Exception _))
-      (System/exit 0)))
+        (System/exit 0)
+        (catch Exception e
+          (log-teardown-failure! root e)
+          (System/exit 1)))))
   true)
 
 (defn teardown-response [root body]
@@ -1645,35 +1664,9 @@
 (defn -main [& args]
   (case (first args)
     "--serve" (serve! (second args) (nth args 2 nil))
-    "--test-state" (test-state! (second args))
-    "--test-html" (test-html!)
-    "--test-post-task" (test-post-task! (second args) (nth args 2 nil) (nth args 3 nil))
-    "--test-post-chat" (test-post-chat! (second args) (nth args 2 nil))
-    "--test-inject-payload" (test-inject-payload! (second args) (nth args 2 nil))
-    "--test-inject-argv" (test-inject-argv! (second args) (nth args 2 nil) (nth args 3 nil))
-    "--test-approve" (test-approval! (second args) (nth args 2 nil) "approve")
-    "--test-reject" (test-approval! (second args) (nth args 2 nil) "reject")
-    "--test-pane" (test-pane! (second args) (nth args 2 nil))
-    "--test-agent-page" (test-agent-page! (second args))
-    "--test-heat" (test-heat! (second args))
-    "--test-heat-codex" (test-heat-codex! (second args))
-    "--test-heat-reorder" (test-heat-reorder! (second args))
-    "--test-heat-head" (test-heat-head! (second args))
-    "--test-heat-mail" (test-heat-mail! (second args))
-    "--test-heat-grok" (test-heat-grok! (second args))
-    "--test-heat-collapse" (test-heat-collapse! (second args))
-    "--test-status-pane" (test-status-pane! (second args) (nth args 2 nil))
-    "--test-status-persist" (test-status-persist! (second args) (nth args 2 nil) (nth args 3 nil))
-    "--test-answer-clarification" (test-answer-clarification! (second args) (nth args 2 nil) (nth args 3 nil))
-    "--test-task" (test-task! (second args) (nth args 2 nil))
-    "--test-doc" (test-doc! (second args) (nth args 2 nil))
-    "--test-delete-task" (test-delete-task! (second args) (nth args 2 nil))
-    "--test-delete-approval" (test-delete-approval! (second args) (nth args 2 nil))
-    "--test-retry-task" (test-retry-task! (second args) (nth args 2 nil) (nth args 3 nil))
-    "--test-save-comments" (test-save-comments! (second args) (nth args 2 nil) (nth args 3 nil) (nth args 4 nil))
-    "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil)))
   (System/exit 0))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))
