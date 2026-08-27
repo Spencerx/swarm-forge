@@ -1460,6 +1460,67 @@
     (is (not (fs/exists? (fs/path root ".swarmforge/notify/reject-HTW"))))
     (is (fs/exists? (fs/path root ".swarmforge/rejected-tasks")))))
 
+(deftest pack-web-retry-moves-a-completed-retry-note-back-to-in-process
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        retry-name (str "50_retry_" (str/replace task-id #"[^A-Za-z0-9]+" "_") ".handoff")
+        completed (fs/path root ".swarmforge/handoffs/inbox/completed" retry-name)
+        in-process (fs/path root ".swarmforge/handoffs/inbox/in_process" retry-name)]
+    (write-file completed
+                (str "from: (Retry)\n"
+                     "to: specifier\n"
+                     "priority: 50\n"
+                     "type: note\n"
+                     "task_id: " task-id "\n"
+                     "task: HTW\n"
+                     "completed_at: 2026-08-26T22:45:36.178441Z\n"
+                     "\n"
+                     "Retry audit.\n"))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_hello.handoff")
+                (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                     "task_id: " task-id "\ntask: HTW\n\npayload\n"))
+    (let [result (pack-web root false "--test-retry-task" (str root) "50_hello" "use an RNG")]
+      (is (zero? (:exit result)))
+      (is (fs/exists? in-process))
+      (is (not (fs/exists? completed)))
+      (is (str/includes? (slurp (str in-process)) (str "task_id: " task-id))))))
+
+(deftest pack-web-second-retry-does-not-leave-copies-in-both-inboxes
+  (let [root (tmp-dir)
+        _ (setup-pack! root)
+        _ (create-task root "HTW" "specifier")
+        task-id (:id (task-card root "HTW"))
+        retry-name (str "50_retry_" (str/replace task-id #"[^A-Za-z0-9]+" "_") ".handoff")
+        completed (fs/path root ".swarmforge/handoffs/inbox/completed" retry-name)
+        in-process (fs/path root ".swarmforge/handoffs/inbox/in_process" retry-name)]
+    (write-file completed
+                (str "from: (Retry)\n"
+                     "to: specifier\n"
+                     "priority: 50\n"
+                     "type: note\n"
+                     "task_id: " task-id "\n"
+                     "task: HTW\n"
+                     "\n"
+                     "Retry audit.\n"))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_first.handoff")
+                (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                     "task_id: " task-id "\ntask: HTW\n\npayload\n"))
+    (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                "50_first" "first"))))
+    (is (zero? (:exit (run {:dir root :env {"SWARMFORGE_ROLE" "specifier"}}
+                           (script "done_with_current.sh")))))
+    (is (fs/exists? completed))
+    (is (not (fs/exists? in-process)))
+    (write-file (fs/path root ".swarmforge/handoffs/pending_approval/50_second.handoff")
+                (str "from: specifier\nto: coder\ntype: git_handoff\n"
+                     "task_id: " task-id "\ntask: HTW\n\npayload\n"))
+    (is (zero? (:exit (pack-web root false "--test-retry-task" (str root)
+                                "50_second" "second"))))
+    (is (fs/exists? in-process))
+    (is (not (fs/exists? completed)))))
+
 (deftest pack-web-retry-rejected-queues-a-master-note
   ;; Given a pending git_handoff
   ;; When POST /api/tasks/retry with comments

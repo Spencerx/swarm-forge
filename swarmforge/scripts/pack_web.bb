@@ -699,7 +699,11 @@
 
 (defn glob-handoffs [dir]
   (if (fs/directory? dir)
-    (vec (fs/glob dir "**/*.handoff"))
+    (->> (concat (fs/glob dir "*.handoff")
+                 (fs/glob dir "**/*.handoff"))
+         (filter fs/regular-file?)
+         distinct
+         vec)
     []))
 
 (defn handoff-task-id [path]

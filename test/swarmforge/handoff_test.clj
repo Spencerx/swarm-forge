@@ -634,6 +634,30 @@
       (is (= 2 (count (fs/glob batch-dir "*.handoff"))))
       (is (fs/exists? (fs/path root ".swarmforge/handoffs/inbox/new/20_20260615T000003Z_000003_from_sender_to_receiver.handoff"))))))
 
+(deftest done-with-current-replaces-an-existing-completed-file
+  (let [root (tmp-dir)
+        name "50_retry_htw.handoff"]
+    (init-repo! root)
+    (setup-project! root {"receiver" "task"})
+    (put-handoff! root "in_process" name
+                  {:id "retry"
+                   :from "(Retry)" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "note" :task "htw"})
+    (put-handoff! root "completed" name
+                  {:id "retry-old"
+                   :from "(Retry)" :to "receiver" :recipient "receiver"
+                   :priority "50" :type "note" :task "htw"
+                   :completed-at "2026-08-26T22:45:36.178441Z"})
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "receiver"}}
+                      (script "done_with_current.sh"))
+          completed (fs/path root ".swarmforge/handoffs/inbox/completed" name)
+          in-process (fs/path root ".swarmforge/handoffs/inbox/in_process" name)]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "COMPLETED:"))
+      (is (not (fs/exists? in-process)))
+      (is (fs/exists? completed))
+      (is (not= "2026-08-26T22:45:36.178441Z" (header completed "completed_at"))))))
+
 (deftest done-with-current-task-completes-without-accepting-next
   ;; Given a current task and more mail in the inbox
   ;; When done_with_current runs
