@@ -857,6 +857,26 @@
 (defn forge-root? [root]
   (fs/directory? (fs/path root "packs")))
 
+(defn session-names-from-file [ctx]
+  (let [file (:sessions-file ctx)]
+    (if (fs/regular-file? file)
+      (->> (str/split-lines (slurp (str file)))
+           (remove str/blank?)
+           (map #(nth (str/split % #"\t") 2))
+           vec)
+      [])))
+
+(defn run-stop-project! [root]
+  (let [ctx (context root)
+        socket (when (fs/regular-file? (:tmux-socket-file ctx))
+                 (not-empty (str/trim (slurp (str (:tmux-socket-file ctx))))))
+        sessions (session-names-from-file ctx)
+        script (str (fs/path (:script-dir ctx) "swarm-cleanup.sh"))]
+    (stop-handoff-daemon! ctx)
+    (when socket
+      (apply process/sh {:continue true}
+             (into [script socket (str (:window-ids-file ctx))] sessions)))))
+
 (defn run-host! [root]
   (check-dependency! "tmux")
   (check-dependency! "git")
@@ -911,26 +931,6 @@
         (start-handoff-daemon! ctx)
         (launch-roles! ctx)
         (announce-ready! ctx)))))
-
-(defn session-names-from-file [ctx]
-  (let [file (:sessions-file ctx)]
-    (if (fs/regular-file? file)
-      (->> (str/split-lines (slurp (str file)))
-           (remove str/blank?)
-           (map #(nth (str/split % #"\t") 2))
-           vec)
-      [])))
-
-(defn run-stop-project! [root]
-  (let [ctx (context root)
-        socket (when (fs/regular-file? (:tmux-socket-file ctx))
-                 (not-empty (str/trim (slurp (str (:tmux-socket-file ctx))))))
-        sessions (session-names-from-file ctx)
-        script (str (fs/path (:script-dir ctx) "swarm-cleanup.sh"))]
-    (stop-handoff-daemon! ctx)
-    (when socket
-      (apply process/sh {:continue true}
-             (into [script socket (str (:window-ids-file ctx))] sessions)))))
 
 (defn test-terminal-bridge! [root backend]
   (let [local-script-dir (fs/path root "swarmforge" "scripts")
