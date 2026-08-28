@@ -998,12 +998,26 @@ function fillPackRadios() {
   if (forgePacks[0]) $("np-conf").value = forgePacks[0].conf || "";
 }
 
+async function refreshForgePacks() {
+  try {
+    const res = await fetch("/api/state", {cache: "no-store"});
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.packs) forgePacks = data.packs;
+    if (data.all_projects) allProjects = data.all_projects;
+    if (data.open_projects) openProjects = data.open_projects;
+  } catch (_) {}
+}
+
 function openNewProject() {
+  refreshForgePacks().then(() => fillPackRadios());
   fillPackRadios();
   $("np-name").value = "";
   $("np-github").checked = false;
   $("np-mission").value = "";
   updateInferred();
+  $("np-ok").disabled = false;
+  $("np-ok").textContent = "OK";
   $("new-project-layer").classList.add("open");
   $("np-name").focus();
 }
@@ -1014,27 +1028,45 @@ function closeNewProject() {
 
 async function submitNewProject() {
   const name = $("np-name").value.trim();
-  const pack = selectedPack();
-  if (!name || !pack) return;
-  const res = await fetch("/api/projects", {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-      name,
-      github: $("np-github").checked,
-      pack,
-      conf: $("np-conf").value,
-      mission: $("np-mission").value
-    })
-  });
-  if (!res.ok) {
-    let msg = "Could not create project";
-    try { msg = (await res.json()).error || msg; } catch (_) {}
-    alert(msg);
+  const pack = selectedPack() || (forgePacks[0] && forgePacks[0].name) || "";
+  if (!name) {
+    alert("Name is required.");
+    $("np-name").focus();
     return;
   }
-  closeNewProject();
-  loadState();
+  if (!pack) {
+    alert("No pack is available. Run get-swarm-forge so packs/ has two-pack, four-pack, or six-pack.");
+    return;
+  }
+  const btn = $("np-ok");
+  btn.disabled = true;
+  btn.textContent = "Creating…";
+  try {
+    const res = await fetch("/api/projects", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        name,
+        github: $("np-github").checked,
+        pack,
+        conf: $("np-conf").value,
+        mission: $("np-mission").value
+      })
+    });
+    if (!res.ok) {
+      let msg = "Could not create project";
+      try { msg = (await res.json()).error || msg; } catch (_) {}
+      alert(msg);
+      return;
+    }
+    closeNewProject();
+    loadState();
+  } catch (err) {
+    alert("Could not create project: " + (err && err.message ? err.message : err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "OK";
+  }
 }
 
 async function openProject(name) {

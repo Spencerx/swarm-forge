@@ -49,9 +49,15 @@
       (str (fs/path (str/replace base #"/+$" "") name)))))
 
 (defn list-pack-names [root]
-  (->> pack-names
-       (filter #(fs/directory? (pack-dir root %)))
-       vec))
+  (let [dir (packs-dir root)]
+    (if (fs/directory? dir)
+      (->> (fs/list-dir dir)
+           (filter fs/directory?)
+           (filter #(fs/regular-file? (fs/path % "swarmforge" "swarmforge.conf")))
+           (map fs/file-name)
+           sort
+           vec)
+      [])))
 
 (defn pack-conf [root pack]
   (let [file (fs/path (pack-dir root pack) "swarmforge" "swarmforge.conf")]
@@ -218,13 +224,12 @@
   (str (fs/path forge "swarmforge" "scripts" "swarmforge.bb")))
 
 (defn start-project-runtime! [forge name]
-  (let [dest (str (project-dir forge name))
+  (let [dest (project-dir forge name)
         script (swarmforge-bb forge)
-        result (process/sh {:continue true} "bb" script "--start-project" dest)]
-    (when-not (zero? (:exit result))
-      (throw (ex-info (str "Failed to start project: "
-                           (str/trim (str (:err result) "\n" (:out result))))
-                      {:http-status 500})))))
+        log (fs/path dest ".swarmforge" "start.log")]
+    (fs/create-dirs (fs/parent log))
+    (process/process ["bb" script "--start-project" (str dest)]
+                     {:out (str log) :err :out})))
 
 (defn stop-project-runtime! [forge name]
   (let [dest (str (project-dir forge name))

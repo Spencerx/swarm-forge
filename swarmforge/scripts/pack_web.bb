@@ -2006,6 +2006,7 @@
         server (http/run-server (http-handler root)
                                 {:ip "127.0.0.1"
                                  :port (parse-port port-str)
+                                 :worker-count 8
                                  :legacy-return-value? false})
         url (str "http://127.0.0.1:" (http/server-port server))]
     (write-pack-web-pid! root)
