@@ -101,6 +101,13 @@ test.describe("pack dashboard", () => {
     await expect(page.locator(".pack-actions #btn-new-task")).toBeVisible();
     await expect(page.locator(".pack-identity #btn-new-task")).toHaveCount(0);
     await expect(page.locator(".pack-actions #teardown-btn")).toHaveCount(0);
+    await expect(page.locator(".board-toolbar")).toHaveCount(0);
+  });
+
+  test("New Task focuses the name field", async ({ page }) => {
+    await page.goto(handle.url);
+    await page.locator("#btn-new-task").click();
+    await expect(page.locator("#nt-name")).toBeFocused();
   });
 
   test("Attention lists approvals and clarifications", async ({ page }) => {
@@ -136,6 +143,21 @@ test.describe("pack dashboard", () => {
     await doc.waitForLoadState("domcontentloaded");
     await expect(doc.locator("pre")).toContainText("Feature: console");
     await expect(doc.locator("#doc-history")).toBeVisible();
+    await expect(doc.locator("#doc-history")).toHaveClass(/empty/);
+    const histBox = await doc.locator("#doc-history").boundingBox();
+    const bodyBox = await doc.locator("#doc-body").boundingBox();
+    expect(histBox.height).toBeLessThan(bodyBox.height);
+    expect(histBox.height).toBeLessThan(80);
+    const split = doc.locator("#doc-split-body");
+    const splitBox = await split.boundingBox();
+    await doc.mouse.move(splitBox.x + splitBox.width / 2, splitBox.y + splitBox.height / 2);
+    await doc.mouse.down();
+    await doc.mouse.move(splitBox.x + splitBox.width / 2, splitBox.y - 80, { steps: 5 });
+    await doc.mouse.up();
+    const afterHist = await doc.locator("#doc-history").boundingBox();
+    const afterBody = await doc.locator("#doc-body").boundingBox();
+    expect(afterHist.height).toBeGreaterThan(histBox.height);
+    expect(afterBody.height).toBeLessThan(bodyBox.height);
     await expect(doc.locator("#doc-diff")).toBeDisabled();
     await expect(doc.locator("#doc-comments")).toBeVisible();
     await expect(doc.locator("#doc-save")).toHaveText("Save");
@@ -177,5 +199,62 @@ test.describe("pack dashboard", () => {
     await expect(page.locator("#rt-retry")).toHaveText("Retry");
     await expect(page.locator("#rt-accept")).toHaveText("Accept Unchanged");
     await expect(page.locator("#rt-delete")).toHaveText("Delete");
+  });
+
+  test("retry dialog comments appear in document history", async ({ page, context }) => {
+    const local = await startDashboard();
+    try {
+      await page.goto(local.url);
+      await page.locator("#attention-approvals .menu > button").click();
+      const popupPromise = context.waitForEvent("page");
+      await page.locator("#attention-approvals .menu-list button", { hasText: "console.feature" }).click();
+      const doc = await popupPromise;
+      await doc.waitForLoadState("domcontentloaded");
+      await doc.locator("#doc-comments").fill("needs an RNG");
+      await doc.locator("#doc-save").click();
+      await page.locator("#attention-approvals button", { hasText: "Reject" }).click();
+      await page.locator("#rt-text").fill("dialog note");
+      await page.locator("#rt-retry").click();
+      await expect(page.locator("#attention-approvals .att-row")).toHaveCount(0);
+      writeFile(
+        path.join(local.root, ".swarmforge/handoffs/pending_approval/50_hello.handoff"),
+        "from: specifier\n" +
+          "to: coder\n" +
+          "type: git_handoff\n" +
+          "task_id: 20260101T000000Z-htw\n" +
+          "task: HTW\n" +
+          "artifacts: features/console.feature,tasks/HTW.md\n" +
+          "\n" +
+          "payload\n"
+      );
+      await page.reload();
+      await page.locator("#attention-approvals .menu > button").click();
+      const againPromise = context.waitForEvent("page");
+      await page.locator("#attention-approvals .menu-list button", { hasText: "console.feature" }).click();
+      const again = await againPromise;
+      await again.waitForLoadState("domcontentloaded");
+      await expect(again.locator("#doc-history")).toContainText("needs an RNG");
+      await expect(again.locator("#doc-history")).toContainText("dialog note");
+      await expect(again.locator("#doc-history .hist-sep")).toHaveCount(2);
+    } finally {
+      await stopDashboard(local);
+    }
+  });
+
+  test("Clarification Open posts the answer", async ({ page, context }) => {
+    const local = await startDashboard();
+    try {
+      await page.goto(local.url);
+      const popupPromise = context.waitForEvent("page");
+      await page.locator("#attention-clarifications button", { hasText: "Open" }).click();
+      const clar = await popupPromise;
+      await clar.waitForLoadState("domcontentloaded");
+      await expect(clar.locator("#clar-request")).toContainText("Does the bat drop to any of 20 rooms?");
+      await clar.locator("#clar-response").fill("Yes, any of the 20 rooms.");
+      await clar.locator("#clar-ok").click();
+      await expect(page.locator("#attention-clarifications .att-row")).toHaveCount(0);
+    } finally {
+      await stopDashboard(local);
+    }
   });
 });

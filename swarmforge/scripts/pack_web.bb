@@ -358,7 +358,8 @@
   (when-let [file (first (filter reverse-handoff? (in-process-for-row row)))]
     (let [h (:headers (parse-message file))
           name (or (get h "task") (get h "task_id"))
-          role (first row)]
+          role (first row)
+          sender (str/trim (or (get h "from") ""))]
       (when-not (str/blank? name)
         {:name name
          :id (str "merging-" (or (get h "task_id") name))
@@ -366,7 +367,7 @@
          :updated_at (or (not-empty (get h "dequeued_at")) "")
          :audit_count 0
          :merging true
-         :status (pane-status-for root role)}))))
+         :status (str "Merging " sender)}))))
 
 (defn merging-cards [root]
   (vec (keep #(merging-card root %) (role-rows root))))
@@ -1124,6 +1125,10 @@
         (fs/move src (fs/path dest-dir (fs/file-name src)) {:replace-existing true}))
       :else (write-retry-in-process! wt headers))))
 
+(defn approval-doc-paths [headers reviews]
+  (vec (distinct (concat (comma-list (get headers "artifacts"))
+                         (keys reviews)))))
+
 (defn retry-approval! [root id comments]
   (let [src (require-pending! root id)
         headers (:headers (parse-message src))
@@ -1133,6 +1138,8 @@
         n (if (git-repo? root) (next-rejected-n root task-id) 1)
         wt (worktree-for root (get headers "from"))
         reviews (read-reviews root id)]
+    (doseq [path (approval-doc-paths headers reviews)]
+      (append-task-review! root task-id path comments))
     (when commit
       (snapshot-rejected! root task-id commit n)
       (restore-commit! wt commit))

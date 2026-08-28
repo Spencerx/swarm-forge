@@ -25,7 +25,7 @@ The runnable SwarmForge configurations live on dedicated branches. Each branch c
 - `coder` implements requested behavior with TDD and unit tests.
 - `cleaner` batches coder handoffs and performs cleanup, CRAP and DRY review, architectural review, encapsulation and separation-of-concerns fixes, and language mutation hardening.
 
-The normal flow is `coder` -> `cleaner`, then a completion broadcast to every other role (card to Done). Use this branch when you want a tight implementation/refinement loop without specification, QA, property-test, or acceptance-test roles.
+The card moves `coder` -> `cleaner`, then to Done. Cleaner also sends a merge-only copy back to coder. Use this branch when you want a tight implementation/refinement loop without specification, QA, property-test, or acceptance-test roles.
 
 ### `four-pack`
 
@@ -36,7 +36,7 @@ The normal flow is `coder` -> `cleaner`, then a completion broadcast to every ot
 - `refactorer` performs behavior-preserving cleanup, coverage improvement, CRAP and DRY review, mutation-site scans, and property-test support.
 - `architect` owns high-level structure, dependency direction, mutation hardening, DRY review, soft Gherkin mutation, and final completion notification.
 
-The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect`, then a completion broadcast to every other role (card to Done). Use this branch when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
+The card moves `specifier` -> `coder` -> `refactorer` -> `architect`, then to Done. Refactorer also sends a merge-only copy back to coder. Architect also sends merge-only copies to every earlier role. Use this branch when you want disciplined development without splitting cleanup, architecture, hardening, and QA into separate agents.
 
 ### `six-pack`
 
@@ -49,7 +49,7 @@ The normal flow is `specifier` -> `coder` -> `refactorer` -> `architect`, then a
 - `hardender` performs mutation hardening, language mutation, CRAP and DRY verification, and soft Gherkin mutation.
 - `QA` converts the specifier's QA procedures into executable scripts, runs final user-interface verification, checks handoff consistency, and sends completion notifications.
 
-The normal flow is `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA`, then a completion broadcast to every other role (card to Done). Use this branch when you want each review and verification concern owned by a separate agent.
+The card moves `specifier` -> `coder` -> `cleaner` -> `architect` -> `hardender` -> `QA`, then to Done. Cleaner also sends a merge-only copy back to coder. Architect and QA also send merge-only copies to every earlier role. Use this branch when you want each review and verification concern owned by a separate agent.
 
 ### `simple-windows`
 
@@ -137,7 +137,7 @@ Layout, top to bottom then left to right:
 
 **Answer a clarification.** If an agent needs a human answer, Attention shows **Request clarification**, the question, and a text box. Submit injects the answer into that agent's pane. Do not use Approve/Reject for this.
 
-**Watch the board.** Cards move when `handoffd` delivers a `git_handoff`. Click a card to open its task body in a resizable window. The card can show the agent's latest status sentence (the last pane line that contains `I'm`). The last role in every pack sends the **terminal** handoff: `to:` every other role. That, not merely several names, moves the card to **Done**. The Done well is always on the board; it fills when that handoff is delivered.
+**Watch the board.** Cards move when `handoffd` delivers a forward `git_handoff`. Click a card to open its task body in a resizable window. The card can show the agent's latest status sentence (the last pane line that contains `I'm`). Merge-only copies from `back-one` or `back-all` do not move the card. The last role in every pack sends the **terminal** handoff: `to:` every other role. That, not merely several names, moves the card to **Done**. The Done well is always on the board; it fills when that handoff is delivered.
 
 **Inspect an agent.** Click a Work Queue role name, or **Open** in the header / chat rail, to pop a live pane capture. Those windows are growable. Agents themselves stay in tmux; these views do not replace the dashboard.
 
@@ -258,7 +258,7 @@ priority: NN
 message: <one line, max 80 chars>
 ```
 
-The helper generates the delivered payload. Agents do not write long handoff bodies, branch names, queue filenames, or tmux commands.
+The helper generates the delivered payload. Agents do not write long handoff bodies, branch names, queue filenames, or tmux commands. If the sender's conf has `back-one` or `back-all`, the helper also writes the merge-only copies; agents do not list those earlier roles on `to:`.
 
 Recipient agents run `ready_for_next.sh` when notified or after restart. It dispatches to the task or batch helper configured for that role. If it prints `NO_TASK`, they stop waiting for work. If it prints `TASK: <path>`, they treat the printed `TASK_NAME` and `PAYLOAD` as the task. If it prints `BATCH: <path>`, they process the printed `BATCH_ITEM` entries in helper-delivered order. If a wake-up arrives while an agent is already working, it can ignore the wake-up. `done_with_current.sh` completes the current item only: it prints `MAIL_WAITING` when more mail is queued, or `NO_TASK`. The agent then runs `ready_for_next.sh` if mail is waiting.
 
@@ -277,7 +277,19 @@ window <role> <agent> <worktree> [task|batch] [forward-only|back-one|back-all] [
 
 The optional receive mode defaults to `task`. Use `batch` for roles that should consume all currently queued equal-priority handoffs as one batch.
 
-The optional propagation token defaults to `forward-only`. `back-one` queues a merge-only copy to the previous window; `back-all` queues merge-only copies to every earlier window. Those copies do not move the card. The card goes Done only when the last window queues a `git_handoff`.
+The optional propagation token defaults to `forward-only`. The card still follows the forward send to the next window.
+
+- `forward-only` — no extra copies.
+- `back-one` — also queue a merge-only copy to the previous window.
+- `back-all` — also queue merge-only copies to every earlier window.
+
+Those extra copies do not move the card. The recipient merges the copy and keeps working; it does not hand that copy onward. The card goes Done only when the last window sends a `git_handoff`.
+
+Pack defaults (roles not listed here are `forward-only`):
+
+- `two-pack`: cleaner `batch back-one`
+- `four-pack`: refactorer `back-one`, architect `batch back-all`
+- `six-pack`: cleaner `batch back-one`, architect `batch back-all`, QA `batch back-all`
 
 Any fields after receive-mode and the propagation token are passed directly to the agent CLI as additional arguments. If you omit those tokens, extra arguments may start at the fifth field:
 
@@ -296,20 +308,20 @@ You can define as many windows as your project needs. Each `role` maps to a corr
 
 This lets each project choose its own swarm shape instead of being locked to a fixed set of roles.
 
-Example config (pack default is invisible):
+Example config (four-pack shape, pack default is invisible):
 
 ```conf
 window-invisible specifier grok master
 window-invisible coder codex coder --yolo
-window-invisible cleaner codex cleaner batch --yolo
-window-invisible architect grok architect batch
+window-invisible refactorer codex refactorer back-one --yolo
+window-invisible architect grok architect batch back-all
 ```
 
 In the example above, the agents run in these worktrees:
 
 - `specifier` -> main working directory on `master` (master agent: New Task and chat)
 - `coder` -> `.worktrees/coder`
-- `cleaner` -> `.worktrees/cleaner`
+- `refactorer` -> `.worktrees/refactorer`
 - `architect` -> `.worktrees/architect`
 
 If a window uses `master` as its worktree name, SwarmForge does not create `.worktrees/master`; that role runs in the main working directory on the `master` branch.

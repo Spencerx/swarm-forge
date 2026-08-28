@@ -1550,6 +1550,26 @@
       (is (str/includes? (str (:err result) (:out result)) "non-forwarding"))
       (is (fs/exists? draft)))))
 
+(deftest done-with-current-after-reverse-copy-does-not-queue-git-handoff
+  ;; Given an in-process reverse git_handoff
+  ;; When done_with_current runs
+  ;; Then the inbound is completed and no outbox git_handoff is written
+  (let [root (tmp-dir)
+        _ (init-repo! root)
+        _ (setup-project! root)
+        inbound (fs/path root ".swarmforge/handoffs/inbox/in_process/00_from_architect.handoff")]
+    (write-file inbound (str "from: architect\nto: sender\npriority: 00\ntype: git_handoff\n"
+                             "task: HTW\nnon-forwarding: true\n\nmerge\n"))
+    (let [result (run {:dir root :env {"SWARMFORGE_ROLE" "sender"}}
+                      (script "done_with_current.sh"))
+          completed (fs/path root ".swarmforge/handoffs/inbox/completed/00_from_architect.handoff")
+          outbox (fs/glob (fs/path root ".swarmforge/handoffs/outbox") "*.handoff")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "COMPLETED:"))
+      (is (fs/exists? completed))
+      (is (not (fs/exists? inbound)))
+      (is (empty? outbox)))))
+
 (deftest swarm-handoff-keeps-draft-task-that-names-a-lane-card
   ;; Given Command syntax and Holy Hand Grenade cards in the sender lane
   ;; When swarm_handoff queues a git_handoff with task: Holy Hand Grenade

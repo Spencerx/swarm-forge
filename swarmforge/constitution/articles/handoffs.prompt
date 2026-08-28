@@ -25,10 +25,13 @@ priority: NN
 task: <short-stable-task-name>
 ```
 
-- After completing the inbound task, always send a `git_handoff` to the next
-  role in the chain, regardless of what changed. Formatting-only, manifest-only,
-  audit-only, generated metadata, and other non-functional churn still require
-  a forward down the chain.
+- After completing a forward inbound task, always send a `git_handoff` to the
+  next role in the chain, regardless of what changed. Formatting-only,
+  manifest-only, audit-only, generated metadata, and other non-functional churn
+  still require a forward down the chain.
+- A reverse (`non-forwarding`) inbound `git_handoff` is merge-only. Merge it,
+  then `done_with_current`. Do not send a `git_handoff` for that inbound. The
+  helper refuses a `git_handoff` while inbound is `non-forwarding`.
 - Preserve the received task name when forwarding work for the same task.
 - The master agent uses the existing New Task / board card name as `task:`. Do not invent a name.
 - For `note`, write:
@@ -71,7 +74,9 @@ message: <one line, max 80 chars>
   current batch in helper-delivered order.
 - Use only the task information printed by the helper scripts.
 - If a tmux wake-up arrives while already working on a task, ignore it.
-- When the task or batch is fully complete, run `done_with_current.sh`.
+- When the task or batch is fully complete, run `done_with_current.sh`. After a
+  reverse (`non-forwarding`) merge, that is the completion; do not queue a
+  `git_handoff` for that inbound.
 - `note` handoffs are tasks too; after reading or acting on a note, run
   `done_with_current.sh` before accepting any other handoff.
 - If `done_with_current.sh` prints `MAIL_WAITING`, run `ready_for_next.sh` as a

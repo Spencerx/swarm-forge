@@ -44,7 +44,6 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 8px minmax(220px,var(--rail));overflow:hidden}
 .splitter{background:var(--line);width:8px;min-width:8px;cursor:col-resize}
 .board{padding:12px;overflow:auto;min-width:0;background:linear-gradient(180deg,#e8ebe4 0%,var(--bg) 48px);display:flex;flex-direction:column;min-height:0}
-.board-toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;font-size:11px;color:var(--muted);flex:0 0 auto}
 .columns{display:flex;gap:12px;align-items:stretch;min-width:min-content;flex:1;min-height:0}
 .col{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-start;min-height:0;max-height:100%}
 .col h3{margin:0 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
@@ -107,7 +106,6 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 @media (max-width:700px){
   header.top{align-items:flex-start;flex-direction:column}
   header.top .spacer{display:none}
-  .board-toolbar span:last-child{display:none}
   .body{display:flex;flex-direction:column;overflow:auto}
   .splitter{display:none}
   .board{flex:0 0 390px;min-height:390px}
@@ -142,11 +140,6 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 
   <div class="body">
     <main class="board">
-      <div class="board-toolbar">
-        <span>Board</span>
-        <span class="spacer"></span>
-        <span>lanes from swarmforge.conf · cards are tasks</span>
-      </div>
       <div class="columns" id="columns"></div>
     </main>
     <div class="splitter" title="Drag to resize"></div>
@@ -474,9 +467,38 @@ function renderHistory(history) {
   }).join("");
 }
 
+function bindVSplit(win, handle, top, bottom) {
+  if (!handle || !top || !bottom) return;
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    const startY = event.clientY;
+    const topH = top.getBoundingClientRect().height;
+    const botH = bottom.getBoundingClientRect().height;
+    const move = (e) => {
+      const dy = e.clientY - startY;
+      top.style.flex = "0 0 " + Math.max(40, topH + dy) + "px";
+      bottom.style.flex = "0 0 " + Math.max(40, botH - dy) + "px";
+      top.classList.remove("empty");
+      bottom.classList.remove("empty");
+      top.style.minHeight = "40px";
+      bottom.style.minHeight = "40px";
+      top.style.maxHeight = "none";
+      bottom.style.maxHeight = "none";
+    };
+    const up = () => {
+      win.removeEventListener("pointermove", move);
+      win.removeEventListener("pointerup", up);
+    };
+    win.addEventListener("pointermove", move);
+    win.addEventListener("pointerup", up);
+  });
+}
+
 function fillDocWindow(win, name, data) {
   const hasDiff = !!(data && data.has_diff);
   const text = (data && data.text) || "";
+  const history = (data && data.history) || [];
+  const emptyHist = !history.length;
   win.document.open();
   win.document.write(
     "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>" +
@@ -485,9 +507,12 @@ function fillDocWindow(win, name, data) {
     "header{display:flex;align-items:center;gap:8px;padding:8px 10px;background:linear-gradient(180deg,#eceee8,#e0e3dc);border-bottom:1px solid #d5d9d2;flex:0 0 auto}" +
     "h1{margin:0;font-size:14px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     "label.toggle{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;color:#68726c;white-space:nowrap}" +
-    "pre{flex:1;min-height:0;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace}" +
+    "pre{flex:1 1 auto;min-height:4rem;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;font:12px/1.4 ui-monospace,Menlo,monospace}" +
     ".diff-add{color:#1a7f37;background:#e6ffed}.diff-del{color:#9b1c1c;background:#ffebe9}.diff-same{color:#1e221f}" +
-    "#doc-history{flex:0 0 28%;min-height:5rem;overflow:auto;padding:8px 12px;border-top:1px solid #d5d9d2;background:#f3f4f0;font:12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
+    ".doc-split{flex:0 0 6px;cursor:row-resize;background:#d5d9d2}" +
+    ".doc-split:hover{background:#b8bfb6}" +
+    "#doc-history{flex:0 0 28%;min-height:5rem;overflow:auto;padding:8px 12px;background:#f3f4f0;font:12px/1.4 ui-sans-serif,system-ui,sans-serif}" +
+    "#doc-history.empty{flex:0 0 2.5rem;min-height:2.5rem;max-height:2.5rem}" +
     ".hist-sep{margin:8px 0 4px;padding-top:6px;border-top:1px solid #c6cbc5;color:#68726c;font-size:10px;text-transform:uppercase;letter-spacing:.04em;font-weight:700}" +
     ".hist-sep:first-child{margin-top:0;padding-top:0;border-top:0}" +
     ".hist-block{white-space:pre-wrap;overflow-wrap:anywhere}" +
@@ -502,8 +527,11 @@ function fillDocWindow(win, name, data) {
     "<label class=\"toggle\"><input type=\"checkbox\" id=\"doc-diff\"" +
     (hasDiff ? "" : " disabled") + "> Diff</label></header>" +
     "<pre id=\"doc-body\">" + escapeHtml(text) + "</pre>" +
-    "<div id=\"doc-history\">" + renderHistory((data && data.history) || []) + "</div>" +
-    "<div class=\"comments\"><label for=\"doc-comments\">New comment</label>" +
+    "<div class=\"doc-split\" id=\"doc-split-body\" title=\"Drag to resize\"></div>" +
+    "<div id=\"doc-history\"" + (emptyHist ? " class=\"empty\"" : "") + ">" +
+    renderHistory(history) + "</div>" +
+    "<div class=\"doc-split\" id=\"doc-split-hist\" title=\"Drag to resize\"></div>" +
+    "<div class=\"comments\" id=\"doc-comments-pane\"><label for=\"doc-comments\">New comment</label>" +
     "<textarea id=\"doc-comments\"></textarea>" +
     "<div class=\"actions\">" +
     "<button type=\"button\" id=\"doc-cancel\">Cancel</button>" +
@@ -513,6 +541,10 @@ function fillDocWindow(win, name, data) {
   win.document.close();
   const box = win.document.getElementById("doc-diff");
   const body = win.document.getElementById("doc-body");
+  const hist = win.document.getElementById("doc-history");
+  const comments = win.document.getElementById("doc-comments-pane");
+  bindVSplit(win, win.document.getElementById("doc-split-body"), body, hist);
+  bindVSplit(win, win.document.getElementById("doc-split-hist"), hist, comments);
   if (box && body && hasDiff) {
     box.onchange = () => {
       body.innerHTML = box.checked ? renderDiffLines(data.lines) : escapeHtml(text);
@@ -549,7 +581,7 @@ async function viewDoc(path, approvalId) {
   const res = await fetch(qs);
   const data = res.ok ? await res.json() : {text: "Not found", history: [], has_diff: false, lines: []};
   const name = fileName(path);
-  const win = window.open("about:blank", "doc-" + encodeURIComponent(path), "resizable=yes,scrollbars=yes,width=780,height=640");
+  const win = window.open("about:blank", "doc-" + encodeURIComponent(path) + "-" + Date.now(), "resizable=yes,scrollbars=yes,width=780,height=640");
   if (!win) return;
   fillDocWindow(win, name, data);
   win.document.getElementById("doc-cancel").onclick = () => win.close();
@@ -648,6 +680,51 @@ function attentionRow(item) {
   return row;
 }
 
+function fillClarWindow(win, item) {
+  const request = item.body || "";
+  const draft = clarDrafts[item.id] || "";
+  win.document.open();
+  win.document.write(
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>Clarification</title>" +
+    "<style>html,body{height:100%;margin:0;display:flex;flex-direction:column;background:#f8f8f5;color:#1e221f;font-family:ui-sans-serif,system-ui,sans-serif}" +
+    "header{flex:0 0 auto;padding:8px 10px;background:linear-gradient(180deg,#eceee8,#e0e3dc);border-bottom:1px solid #d5d9d2;font-weight:600;font-size:13px}" +
+    "#clar-request{flex:1 1 50%;min-height:4rem;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;background:#fffef9;font:13px/1.45 ui-sans-serif,system-ui,sans-serif}" +
+    ".doc-split{flex:0 0 6px;cursor:row-resize;background:#d5d9d2}" +
+    ".doc-split:hover{background:#b8bfb6}" +
+    "#clar-response-pane{flex:1 1 50%;min-height:4rem;display:flex;flex-direction:column;padding:10px 12px;background:#fff;gap:6px}" +
+    "label{font-size:10px;text-transform:uppercase;font-weight:700;color:#68726c}" +
+    "textarea{flex:1;min-height:4rem;width:100%;border:1px solid #c6cbc5;border-radius:6px;padding:8px;font:13px/1.45 ui-sans-serif,system-ui,sans-serif;resize:none}" +
+    ".actions{display:flex;justify-content:flex-end}" +
+    "button{border:1px solid #9aa59e;background:#3d5a45;border-color:#3d5a45;color:#fff;padding:5px 12px;border-radius:7px;font-size:12px;cursor:pointer}" +
+    "</style></head><body>" +
+    "<header>Clarification requested from: " + escapeHtml(item.role || "agent") + "</header>" +
+    "<pre id=\"clar-request\">" + escapeHtml(request) + "</pre>" +
+    "<div class=\"doc-split\" id=\"clar-split\" title=\"Drag to resize\"></div>" +
+    "<div id=\"clar-response-pane\"><label for=\"clar-response\">Response</label>" +
+    "<textarea id=\"clar-response\">" + escapeHtml(draft) + "</textarea>" +
+    "<div class=\"actions\"><button type=\"button\" id=\"clar-ok\">OK</button></div></div>" +
+    "</body></html>"
+  );
+  win.document.close();
+  bindVSplit(win, win.document.getElementById("clar-split"),
+    win.document.getElementById("clar-request"),
+    win.document.getElementById("clar-response-pane"));
+}
+
+function openClarification(item) {
+  const win = window.open("about:blank", "clar-" + encodeURIComponent(item.id || "") + "-" + Date.now(),
+    "resizable=yes,scrollbars=yes,width=720,height=520");
+  if (!win) return;
+  fillClarWindow(win, item);
+  const box = win.document.getElementById("clar-response");
+  win.document.getElementById("clar-ok").onclick = async () => {
+    const text = box.value;
+    clarDrafts[item.id] = text;
+    await postClarification(item.id, text);
+    win.close();
+  };
+}
+
 function clarificationRow(item) {
   const row = document.createElement("form");
   row.className = "att-row";
@@ -664,6 +741,14 @@ function clarificationRow(item) {
   input.addEventListener("input", () => {
     clarDrafts[item.id] = input.value;
   });
+  const open = document.createElement("button");
+  open.type = "button";
+  open.className = "btn btn-sm";
+  open.textContent = "Open";
+  open.onclick = (event) => {
+    event.preventDefault();
+    openClarification(item);
+  };
   const send = document.createElement("button");
   send.type = "submit";
   send.className = "btn btn-sm btn-primary";
@@ -672,7 +757,7 @@ function clarificationRow(item) {
     event.preventDefault();
     postClarification(item.id, input.value);
   });
-  row.append(pill, summary, input, send);
+  row.append(pill, summary, input, open, send);
   return row;
 }
 
@@ -926,7 +1011,10 @@ async function teardownSwarm() {
   }
 }
 
-$("btn-new-task").onclick = () => $("new-task-layer").classList.add("open");
+$("btn-new-task").onclick = () => {
+  $("new-task-layer").classList.add("open");
+  $("nt-name").focus();
+};
 $("nt-cancel").onclick = closeNewTask;
 $("nt-ok").onclick = submitNewTask;
 $("rt-delete").onclick = deleteRejected;

@@ -1583,7 +1583,7 @@
 (deftest pack-web-shows-yellow-merging-card-for-handback
   ;; Given htw in architect and jump in coder, plus a reverse htw copy in coder in_process
   ;; When --test-status-pane
-  ;; Then a merging card for htw is in coder with pane status, jump waits, real htw stays architect
+  ;; Then a merging card for htw is in coder with Merging refactorer, jump waits, real htw stays architect
   (let [root (tmp-dir)
         roles four-pack-roles
         _ (setup-pack! root roles)
@@ -1606,7 +1606,7 @@
     (is (= 1 (count merging)))
     (is (= "coder" (:lane (first merging))))
     (is (= "htw" (:name (first merging))))
-    (is (str/includes? (str (:status (first merging))) "reverse handoff is structurally reconciled"))
+    (is (= "Merging refactorer" (:status (first merging))))
     (is (= "waiting in queue" (:status jump-card)))
     (is (= "architect" (:lane htw-card))))
   (let [root (tmp-dir)
@@ -1997,9 +1997,11 @@
                  true)
             hist (vec (:history doc))]
         (is (true? (:has_diff doc)))
-        (is (= 1 (count hist)))
+        (is (= 2 (count hist)))
         (is (= "needs an RNG" (:text (first hist))))
+        (is (= "retry the spec" (:text (second hist))))
         (is (not (str/blank? (:at (first hist)))))
+        (is (not (str/blank? (:at (second hist)))))
         (is (some #(and (= "del" (:type %)) (str/includes? (str (:text %)) "one"))
                   (:lines doc)))
         (is (some #(and (= "del" (:type %)) (= "---" (:text %)))
