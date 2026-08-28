@@ -33,7 +33,10 @@
 (def allowed-fields #{"type" "to" "priority" "task_id" "task" "commit" "message"})
 (def allowed-types #{"git_handoff" "note"})
 (def script-dir (fs/parent *file*))
-(load-file (str (fs/path script-dir "handoff_lib.bb")))
+(try
+  (require 'handoff-lib)
+  (catch Exception _
+    (load-file (str (fs/path script-dir "handoff_lib.bb")))))
 
 (defn usage []
   (binding [*out* *err*]
@@ -677,72 +680,86 @@
           [(str/trim (:out (command dir "git" "rev-parse" "--short=10" object))) nil]
           [nil (format "Header 'commit' must resolve to a commit; '%s' resolves to '%s'." commit object-type)])))))
 
-(defn validate [headers ordered]
+(def allowed-fields-by-type
+  {"git_handoff" #{"type" "to" "priority" "task_id" "task" "commit"}
+   "note" #{"type" "to" "priority" "message"}})
+
+(defn field-allowed? [type field]
+  (contains? (get allowed-fields-by-type type) field))
+
+(defn field-errors [type ordered]
+  (if type
+    (vec (for [field ordered
+               :when (not (field-allowed? type field))]
+           (format "Header '%s' is not allowed for type '%s'." field type)))
+    []))
+
+(defn base-errors [headers]
   (let [type (get headers "type")
         to (get headers "to")
-        priority (get headers "priority")
-        commit (get headers "commit")
-        task-name (get headers "task")
-        note-message (get headers "message")
-        [recipients recipient-errors] (validate-recipients to)
-        field-errors (for [field ordered
-                           :let [valid? (case [type field]
-                                          ["git_handoff" "type"] true
-                                          ["git_handoff" "to"] true
-                                          ["git_handoff" "priority"] true
-                                          ["git_handoff" "task_id"] true
-                                          ["git_handoff" "task"] true
-                                          ["git_handoff" "commit"] true
-                                          ["note" "type"] true
-                                          ["note" "to"] true
-                                          ["note" "priority"] true
-                                          ["note" "message"] true
-                                          false)]
-                           :when (and type (not valid?))]
-                       (format "Header '%s' is not allowed for type '%s'." field type))
-        base-errors (cond-> []
-                      (str/blank? type) (conj "Missing required header 'type'.")
-                      (str/blank? to) (conj "Missing required header 'to'.")
-                      (str/blank? priority) (conj "Missing required header 'priority'.")
-                      (and (not (str/blank? type)) (not (allowed-types type)))
-                      (conj (format "Header 'type' must be one of git_handoff or note; got '%s'." type))
-                      (and (not (str/blank? priority)) (not (valid-priority? priority)))
-                      (conj (format "Header 'priority' must be two digits from 00 to 99; got '%s'." priority)))
-        [canonical commit-error]
-        (if (= "git_handoff" type)
-          (cond
-            (str/blank? commit) [nil "Missing required header 'commit' for git_handoff."]
-            (not (re-matches #"[0-9a-fA-F]{10}" commit))
-            [nil (format "Header 'commit' must be exactly 10 hexadecimal characters; got '%s'." commit)]
-            :else (canonical-commit commit))
-          [nil nil])
-        git-errors (cond-> []
-                     (= "git_handoff" type)
-                     (into (cond-> []
-                             (str/blank? (get headers "task_id"))
-                             (conj "Missing required header 'task_id' for git_handoff.")
-                             (str/blank? task-name)
-                             (conj "Missing required header 'task' for git_handoff.")
-                             (> (count (or task-name "")) 80)
-                             (conj (format "Header 'task' must be no longer than 80 characters; got %d." (count task-name)))))
-                     (and (not= "git_handoff" type) (not (str/blank? commit)))
-                     (conj "Header 'commit' is only allowed for git_handoff.")
-                     (and (not= "git_handoff" type) (not (str/blank? task-name)))
-                     (conj "Header 'task' is only allowed for git_handoff.")
-                     commit-error
-                     (conj commit-error))
-        note-errors (cond-> []
-                      (= "note" type)
-                      (into (cond-> []
-                              (str/blank? note-message)
-                              (conj "Missing required header 'message' for note.")
-                              (> (count (or note-message "")) 80)
-                              (conj (format "Header 'message' must be no longer than 80 characters; got %d." (count note-message)))))
-                      (and (not= "note" type) (not (str/blank? note-message)))
-                      (conj "Header 'message' is only allowed for note."))]
+        priority (get headers "priority")]
+    (cond-> []
+      (str/blank? type) (conj "Missing required header 'type'.")
+      (str/blank? to) (conj "Missing required header 'to'.")
+      (str/blank? priority) (conj "Missing required header 'priority'.")
+      (and (not (str/blank? type)) (not (allowed-types type)))
+      (conj (format "Header 'type' must be one of git_handoff or note; got '%s'." type))
+      (and (not (str/blank? priority)) (not (valid-priority? priority)))
+      (conj (format "Header 'priority' must be two digits from 00 to 99; got '%s'." priority)))))
+
+(defn commit-check [type commit]
+  (if (= "git_handoff" type)
+    (cond
+      (str/blank? commit) [nil "Missing required header 'commit' for git_handoff."]
+      (not (re-matches #"[0-9a-fA-F]{10}" commit))
+      [nil (format "Header 'commit' must be exactly 10 hexadecimal characters; got '%s'." commit)]
+      :else (canonical-commit commit))
+    [nil nil]))
+
+(defn git-required-errors [headers]
+  (let [task-name (get headers "task")]
+    (cond-> []
+      (str/blank? (get headers "task_id"))
+      (conj "Missing required header 'task_id' for git_handoff.")
+      (str/blank? task-name)
+      (conj "Missing required header 'task' for git_handoff.")
+      (> (count (or task-name "")) 80)
+      (conj (format "Header 'task' must be no longer than 80 characters; got %d." (count task-name))))))
+
+(defn git-header-errors [type headers]
+  (let [task-name (get headers "task")
+        commit (get headers "commit")]
+    (cond-> []
+      (= "git_handoff" type)
+      (into (git-required-errors headers))
+      (and (not= "git_handoff" type) (not (str/blank? commit)))
+      (conj "Header 'commit' is only allowed for git_handoff.")
+      (and (not= "git_handoff" type) (not (str/blank? task-name)))
+      (conj "Header 'task' is only allowed for git_handoff."))))
+
+(defn note-errors [type note-message]
+  (cond-> []
+    (= "note" type)
+    (into (cond-> []
+            (str/blank? note-message)
+            (conj "Missing required header 'message' for note.")
+            (> (count (or note-message "")) 80)
+            (conj (format "Header 'message' must be no longer than 80 characters; got %d." (count note-message)))))
+    (and (not= "note" type) (not (str/blank? note-message)))
+    (conj "Header 'message' is only allowed for note.")))
+
+(defn validate [headers ordered]
+  (let [type (get headers "type")
+        [recipients recipient-errors] (validate-recipients (get headers "to"))
+        [canonical commit-error] (commit-check type (get headers "commit"))]
     {:recipients recipients
      :canonical-commit canonical
-     :errors (vec (concat base-errors recipient-errors field-errors git-errors note-errors))}))
+     :errors (vec (concat (base-errors headers)
+                          recipient-errors
+                          (field-errors type ordered)
+                          (git-header-errors type headers)
+                          (if commit-error [commit-error] [])
+                          (note-errors type (get headers "message"))))}))
 
 (defn next-sequence []
   (let [dir (state-dir)
@@ -919,4 +936,5 @@
                   (println "HANDOFF QUEUED:" (str outbox-file)))
                 (complete-current-after-git-handoff! headers)))))))))
 
-(apply -main *command-line-args*)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

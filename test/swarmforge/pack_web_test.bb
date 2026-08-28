@@ -2,7 +2,11 @@
 
 (require '[babashka.fs :as fs])
 
-(load-file (str (fs/path (fs/parent *file*) "pack_web.bb")))
+(def repo-root (-> *file* fs/file fs/parent fs/parent fs/parent))
+(try
+  (require 'pack-web)
+  (catch Exception _
+    (load-file (str (fs/path repo-root "swarmforge" "scripts" "pack_web.bb")))))
 (in-ns 'pack-web)
 
 (defn test-teardown-throw! [root]
@@ -44,5 +48,6 @@
     (do (usage)
         (exit! 1 nil))))
 
-(apply test-cli! *command-line-args*)
-(System/exit 0)
+(when (= (str *file*) (System/getProperty "babashka.file"))
+  (apply test-cli! *command-line-args*)
+  (System/exit 0))
