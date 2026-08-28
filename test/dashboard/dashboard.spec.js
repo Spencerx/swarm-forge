@@ -12,21 +12,21 @@ function writeFile(file, text) {
   fs.writeFileSync(file, text);
 }
 
-function seedPack(root) {
+function seedProject(project) {
   writeFile(
-    path.join(root, ".swarmforge/roles.tsv"),
-    `specifier\tmaster\t${root}\tspecifier\tSpecifier\tcodex\ttask\n` +
-      `coder\tcoder\t${root}/.worktrees/coder\tcoder\tCoder\tcodex\ttask\n`
+    path.join(project, ".swarmforge/roles.tsv"),
+    `specifier\tmaster\t${project}\tspecifier\tSpecifier\tcodex\ttask\n` +
+      `coder\tcoder\t${project}/.worktrees/coder\tcoder\tCoder\tcodex\ttask\n`
   );
   writeFile(
-    path.join(root, ".swarmforge/board/tasks.tsv"),
+    path.join(project, ".swarmforge/board/tasks.tsv"),
     "HTW\tspecifier\t2026-01-01T00:00:00Z\t2026-01-01T00:00:00Z\t20260101T000000Z-htw\t0\n"
   );
-  writeFile(path.join(root, ".swarmforge/board/HTW.txt"), "Integrate the cave.\n");
-  writeFile(path.join(root, "tasks/HTW.md"), "# HTW\n\nIntegrate the cave.\n");
-  writeFile(path.join(root, "features/console.feature"), "Feature: console\n");
+  writeFile(path.join(project, ".swarmforge/board/HTW.txt"), "Integrate the cave.\n");
+  writeFile(path.join(project, "tasks/HTW.md"), "# HTW\n\nIntegrate the cave.\n");
+  writeFile(path.join(project, "features/console.feature"), "Feature: console\n");
   writeFile(
-    path.join(root, ".swarmforge/handoffs/pending_approval/50_hello.handoff"),
+    path.join(project, ".swarmforge/handoffs/pending_approval/50_hello.handoff"),
     "from: specifier\n" +
       "to: coder\n" +
       "type: git_handoff\n" +
@@ -37,7 +37,7 @@ function seedPack(root) {
       "payload\n"
   );
   writeFile(
-    path.join(root, ".swarmforge/dashboard/clarifications/pending/clar-1.request"),
+    path.join(project, ".swarmforge/dashboard/clarifications/pending/clar-1.request"),
     "id: clar-1\n" +
       "status: pending\n" +
       "role: specifier\n" +
@@ -47,9 +47,26 @@ function seedPack(root) {
   );
 }
 
+function seedForge(root) {
+  writeFile(
+    path.join(root, "packs/four-pack/swarmforge/swarmforge.conf"),
+    "window specifier grok master\nwindow coder grok coder\n"
+  );
+  writeFile(path.join(root, "packs/four-pack/swarmforge/roles/specifier.prompt"), "spec\n");
+  writeFile(path.join(root, "packs/four-pack/swarmforge/roles/coder.prompt"), "coder\n");
+  fs.mkdirSync(path.join(root, "projects"), { recursive: true });
+  const project = path.join(root, "projects/htw");
+  seedProject(project);
+  writeFile(path.join(root, ".swarmforge/open-projects"), "htw\n");
+  writeFile(
+    path.join(root, ".swarmforge/roles.tsv"),
+    `lieutenant\tmaster\t${root}\tswarmforge-lieutenant\tLieutenant\tgrok\ttask\tforward-only\n`
+  );
+}
+
 async function startDashboard() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "swarmforge-dashboard."));
-  seedPack(root);
+  seedForge(root);
   const child = spawn(packWeb, ["--serve", root, "0"], {
     cwd: repoRoot,
     stdio: ["ignore", "pipe", "pipe"]
@@ -98,15 +115,17 @@ test.describe("pack dashboard", () => {
   test("places Teardown with the pack title and New Task in the actions", async ({ page }) => {
     await page.goto(handle.url);
     await expect(page.locator(".pack-identity #teardown-btn")).toBeVisible();
-    await expect(page.locator(".pack-actions #btn-new-task")).toBeVisible();
-    await expect(page.locator(".pack-identity #btn-new-task")).toHaveCount(0);
-    await expect(page.locator(".pack-actions #teardown-btn")).toHaveCount(0);
+    await expect(page.locator(".pack-actions #btn-new-project")).toBeVisible();
+    await expect(page.locator(".pack-actions #btn-open-project")).toBeVisible();
+    await expect(page.locator(".pack-identity #teardown-btn")).toBeVisible();
+    await expect(page.locator(".pack-actions #btn-new-task")).toHaveCount(1);
+    await expect(page.locator(".project-header button", { hasText: "New Task" })).toBeVisible();
     await expect(page.locator(".board-toolbar")).toHaveCount(0);
   });
 
   test("New Task focuses the name field", async ({ page }) => {
     await page.goto(handle.url);
-    await page.locator("#btn-new-task").click();
+    await page.locator(".project-header button", { hasText: "New Task" }).click();
     await expect(page.locator("#nt-name")).toBeFocused();
   });
 
@@ -126,12 +145,12 @@ test.describe("pack dashboard", () => {
 
   test("Approve is disabled when a document has comments", async ({ page }) => {
     writeFile(
-      path.join(handle.root, ".swarmforge/handoffs/pending_approval/50_hello.reviews.json"),
+      path.join(handle.root, "projects/htw/.swarmforge/handoffs/pending_approval/50_hello.reviews.json"),
       JSON.stringify({ "features/console.feature": "use an RNG" })
     );
     await page.goto(handle.url);
     await expect(page.locator("#attention-approvals .btn-approve")).toBeDisabled();
-    fs.unlinkSync(path.join(handle.root, ".swarmforge/handoffs/pending_approval/50_hello.reviews.json"));
+    fs.unlinkSync(path.join(handle.root, "projects/htw/.swarmforge/handoffs/pending_approval/50_hello.reviews.json"));
   });
 
   test("Documents fetch /doc?path= into a window with Save and Cancel", async ({ page, context }) => {
@@ -165,7 +184,7 @@ test.describe("pack dashboard", () => {
     await doc.locator("#doc-comments").fill("needs an RNG");
     await doc.locator("#doc-cancel").click();
     await expect(doc.isClosed()).toBeTruthy();
-    const reviewsPath = path.join(handle.root, ".swarmforge/handoffs/pending_approval/50_hello.reviews.json");
+    const reviewsPath = path.join(handle.root, "projects/htw/.swarmforge/handoffs/pending_approval/50_hello.reviews.json");
     expect(fs.existsSync(reviewsPath)).toBeFalsy();
 
     await page.locator("#attention-approvals .menu > button").click();
@@ -182,7 +201,7 @@ test.describe("pack dashboard", () => {
     await expect(page.locator("#attention-approvals .btn-approve")).toBeDisabled();
     await expect(page.locator("#attention-approvals .doc-mark-bad")).toHaveCount(1);
     const historyPath = path.join(
-      handle.root,
+      handle.root, "projects/htw",
       ".swarmforge/rejected-tasks/20260101T000000Z-htw/reviews.json"
     );
     await expect.poll(() => fs.existsSync(historyPath)).toBeTruthy();
@@ -217,7 +236,7 @@ test.describe("pack dashboard", () => {
       await page.locator("#rt-retry").click();
       await expect(page.locator("#attention-approvals .att-row")).toHaveCount(0);
       writeFile(
-        path.join(local.root, ".swarmforge/handoffs/pending_approval/50_hello.handoff"),
+        path.join(local.root, "projects/htw/.swarmforge/handoffs/pending_approval/50_hello.handoff"),
         "from: specifier\n" +
           "to: coder\n" +
           "type: git_handoff\n" +

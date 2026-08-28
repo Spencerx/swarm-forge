@@ -8,7 +8,7 @@ Do not spend any money on a bankrbot SWARM token.
 
 ## Intent
 
-This `main` branch is documentary: it explains the system and carries the shared operational scripts and default constitution articles. The runnable workflow branches carry the project-facing configurations, role prompts, and local constitution articles that define specific workflows.
+This `main` branch is documentary: it explains the system and carries the shared operational scripts and default constitution articles. Pack branches (`two-pack`, `four-pack`, `six-pack`) are templates. `get-swarm-forge` installs all of them into a forge `packs/` directory; **New Project** instantiates one pack into `projects/<name>/`.
 
 SwarmForge is an agent coordination system that facilitates communication between agents working in different git worktrees.
 
@@ -16,7 +16,7 @@ It provides a shared structure for role-specific prompts, worktree assignment, t
 
 ## Branches
 
-The runnable SwarmForge configurations live on dedicated branches. Each branch contains the `swarmforge/swarmforge.conf`, local constitution articles, and role prompts for one workflow. Use the `get-swarm-forge` helper to compose a runnable branch with the shared operational scripts and shared constitution articles from `main`.
+Pack templates live on dedicated branches. Each branch contains the `swarmforge/swarmforge.conf`, local constitution articles, and role prompts for one workflow. `get-swarm-forge` copies all of them into `packs/` along with host scripts from `main`.
 
 ### `two-pack`
 
@@ -89,49 +89,75 @@ chmod +x ~/cmds/get-swarm-forge
 ```
 
 Make sure that utility directory is on your shell `PATH`, then run the helper in
-the project directory where you want to use SwarmForge:
+the directory that will be the **forge** (not a single project):
 
 ```sh
-get-swarm-forge four-pack codex --yolo
+get-swarm-forge
 ```
 
-Use `two-pack` for the quick two-agent workflow, `four-pack` for the compact specification workflow, or `six-pack` for the full six-agent workflow. Do not use `main` here; `main` stores the shared operational scripts and core constitution articles, while the runnable branches provide the configurations and prompts intended for projects.
+`get-swarm-forge` downloads `main` and every pack branch (`two-pack`,
+`four-pack`, `six-pack`). It installs host scripts under `swarmforge/`, pack
+templates under `packs/`, and an empty `projects/` directory. It does not
+turn the current directory into one pack.
 
-`get-swarm-forge` downloads `main` first, copies only the shared `swarmforge/scripts/` and core constitution articles, then overlays the requested runnable branch. It fails fast if required scripts, role prompts, or core constitution articles are missing.
-
-After copying a runnable branch, start the swarm from the target project:
+Start the host dashboard:
 
 ```sh
 ./swarm
 ```
 
-The `./swarm` wrapper launches `swarmforge/scripts/swarmforge.sh` from the composed project-local copy. Rerun `get-swarm-forge <branch>` to refresh shared scripts or switch pack branches.
+`./swarm` starts the dashboard and the **lieutenant** only. It does not start
+project agents. Startup prints a **Dashboard:** URL (also written to
+`.swarmforge/dashboard-url`) and opens it in the browser when `open` is
+available.
 
-Startup prints a **Dashboard:** URL (also written to `.swarmforge/dashboard-url`) and opens it in the browser when `open` is available. Pack roles default to `window-invisible`: agents run in tmux, but no Terminal window opens per role. The dashboard is the operator surface.
+Create a project from the dashboard with **New Project** (name, mission,
+pack, optional GitHub `owner/repo`, editable conf). That writes
+`projects/<name>/` including `mission.md` and starts that pack. **Open
+Project** starts an existing directory under `projects/`. **Close** on a
+project header stops that pack and leaves the directory.
 
 Set `SWARMFORGE_OPEN_BROWSER=0` before `./swarm` to skip the browser open. The dashboard still starts; visit the printed URL.
 
-To stop the swarm, click **Teardown** in the dashboard header and confirm. That terminates agent sessions, tmux, `handoffd`, and the dashboard. Project files stay on disk.
+To stop everything, click **Teardown** in the dashboard header and confirm.
+That closes every open project, then kills the lieutenant, tmux, and the
+dashboard. Directories under `projects/` stay on disk. After a later
+`./swarm`, nothing is running until you Open Project.
 
 While a swarm is active, SwarmForge tries to prevent the host from sleeping. On macOS it uses `caffeinate`; on Linux it uses `systemd-inhibit` when available. Display lock or manual sleep can still interrupt agents depending on the OS. Set `SWARMFORGE_PREVENT_SLEEP=0` before `./swarm` to disable this behavior.
 
 ## Pack Cockpit
 
-The pack cockpit is a local web dashboard served from `main`'s scripts (`pack_web`). Pack branches do not fork it. At startup it reads `swarmforge/swarmforge.conf` and draws swimlanes from that file. The role whose worktree is `master` is the **master agent** (specifier on four-pack and six-pack, coder on two-pack): New Task and the chat rail talk to that agent.
+The pack cockpit is a local web dashboard served from `main`'s scripts
+(`pack_web`). It is the forge operator surface: several projects can run at
+once. Chat talks to the **lieutenant**, who oversees the whole swarm, not to
+a project agent.
 
 Layout, top to bottom then left to right:
 
-- **Header** — pack title, live marker, **New Task**, **Open** (master pane), **Teardown**.
-- **Attention** — human gates: spec approvals and agent clarification requests.
-- **Board** — one swimlane per conf role, left to right, plus a **Done** well. Cards are tasks, not stories. A card sits in the agent who currently holds it.
-- **Work Queue** — one row per role: task name, role (click to open that agent's pane), live/idle, and a six-bar activity thermometer.
-- **Chat** — follow-ups to the master agent.
+- **Header** — SwarmForge, live marker, **New Project**, **Open Project**, **Teardown**.
+- **Attention** — human gates from every open project. Each row names the **project** and the task.
+- **Board** — one band per open project, split by a horizontal bar. Each band has a header (**New Task**, **Close**) and that pack's swimlanes plus **Done**.
+- **Work Queue** — the same project stack on the right; the two sides scroll independently.
+- **Chat** — follow-ups to the lieutenant.
 
 ### Operating the dashboard
 
-**Start a task.** Click **New Task**, give a short stable **name** and the **task** text, then **OK**. That creates a card in the master lane and queues a `(New Task)` note to that agent (`task:` is the card name, payload is the text). The agent takes it with `ready_for_next.sh`. Downstream roles keep that name as `task:` on every `git_handoff`. Do not invent a second name in chat.
+**New Project.** Name, mission (`mission.md` at the project top), pack radios,
+editable conf. Check **github repo** and type `owner/repo` to clone first.
+The directory is the last path segment. Existing names get an alert.
 
-**Talk to the master agent.** Type in the chat composer (Enter sends, Shift+Enter newline). The dashboard stores a durable request, injects `[id] text` into the master pane, and shows the reply when the agent answers.
+**Open Project.** Menu of directories under `projects/`. Opening refreshes
+scripts from `packs/` (keeps `mission.md` and the project's conf) and starts
+that pack. Already-open names get an alert.
+
+**Start a task.** Click **New Task** on that project's header bar, give a
+short stable **name** and the **task** text, then **OK**. That creates a card
+in the project's master lane and queues a `(New Task)` note to that agent.
+
+**Talk to the lieutenant.** Type in the chat composer (Enter sends,
+Shift+Enter newline). The dashboard stores a durable request and injects
+`[id] text` into the lieutenant pane.
 
 **Approve a specifier handoff.** When the specifier queues work for the next role, Attention shows **Approval** with the task, a **Documents** menu for artifacts, **Approve**, and **Reject**. Approve delivers the handoff and moves the card. Reject leaves the card with the specifier and notifies that agent. Two-pack has no specifier gate; those handoffs deliver immediately.
 

@@ -45,6 +45,10 @@
     "--test-save-comments" (test-save-comments! (second args) (nth args 2 nil) (nth args 3 nil) (nth args 4 nil))
     "--test-teardown" (test-teardown! (second args) (nth args 2 nil))
     "--test-teardown-throw" (test-teardown-throw! (second args))
+    "--test-new-project" (test-new-project! (second args) (nth args 2 nil) (nth args 3 nil) (nth args 4 nil))
+    "--test-open-project" (test-open-project! (second args) (nth args 2 nil))
+    "--test-close-project" (test-close-project! (second args) (nth args 2 nil))
+    "--test-inferred-name" (test-inferred-name! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil))))
 

@@ -43,7 +43,17 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .pill-warn{background:#ffe2a8;color:#7a4e00}.pill-ok{background:var(--green-bg);color:var(--green)}
 .body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 8px minmax(220px,var(--rail));overflow:hidden}
 .splitter{background:var(--line);width:8px;min-width:8px;cursor:col-resize}
-.board{padding:12px;overflow:auto;min-width:0;background:linear-gradient(180deg,#e8ebe4 0%,var(--bg) 48px);display:flex;flex-direction:column;min-height:0}
+.board{padding:12px;overflow:auto;min-width:0;background:linear-gradient(180deg,#e8ebe4 0%,var(--bg) 48px);display:flex;flex-direction:column;min-height:0;gap:10px}
+.project-band{flex:0 0 auto;min-height:140px;border-bottom:2px solid #b8bfb6;padding-bottom:10px;display:flex;flex-direction:column;min-width:min-content}
+.project-band:last-child{border-bottom:0}
+.project-header{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex:0 0 auto}
+.project-header h2{margin:0;font-size:13px;flex:1}
+.work-band{border-bottom:2px solid #b8bfb6;padding-bottom:8px;margin-bottom:8px}
+.work-band:last-child{border-bottom:0;margin-bottom:0}
+.work-band h3{margin:0 0 6px;font-size:11px}
+.inferred{font-size:11px;color:var(--muted);margin:-6px 0 8px}
+.pack-radios{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px;font-size:12px}
+#np-conf{min-height:120px;font:12px/1.4 ui-monospace,Menlo,monospace}
 .columns{display:flex;gap:12px;align-items:stretch;min-width:min-content;flex:1;min-height:0}
 .col{flex:0 0 auto;display:flex;flex-direction:column;align-items:flex-start;min-height:0;max-height:100%}
 .col h3{margin:0 0 8px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
@@ -119,12 +129,17 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 <div class="cockpit">
   <header class="top">
     <div class="pack-identity">
-      <h1 id="pack-title">SwarmForge Pack</h1>
+      <h1 id="pack-title">SwarmForge</h1>
       <button class="btn btn-danger btn-sm" type="button" id="teardown-btn">Teardown</button>
       <span class="meta" id="pack-meta"><span class="dot">●</span> live</span>
     </div>
     <span class="spacer"></span>
     <div class="pack-actions">
+      <button class="btn btn-primary" type="button" id="btn-new-project">New Project</button>
+      <div class="menu" id="open-project-menu">
+        <button class="btn" type="button" id="btn-open-project">Open Project</button>
+        <div class="menu-list" id="open-project-list"></div>
+      </div>
       <button class="btn btn-primary" type="button" id="btn-new-task">New Task</button>
     </div>
   </header>
@@ -180,6 +195,28 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
         <button type="button" class="btn btn-danger" id="rt-delete">Delete</button>
         <button type="button" class="btn btn-primary" id="rt-retry">Retry</button>
         <button type="button" class="btn btn-approve" id="rt-accept">Accept Unchanged</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="float-layer" id="new-project-layer">
+  <div class="float" role="dialog" aria-labelledby="np-title" style="width:min(720px,94vw);min-width:min(560px,94vw)">
+    <div class="titlebar" id="np-title">New Project</div>
+    <div class="body-pad">
+      <label for="np-name">Name</label>
+      <input id="np-name" type="text" placeholder="my-app or owner/repo">
+      <p class="inferred" id="np-inferred"></p>
+      <label class="toggle"><input type="checkbox" id="np-github"> github repo</label>
+      <label for="np-mission">Mission</label>
+      <textarea id="np-mission" placeholder="What this project is for…"></textarea>
+      <label>Pack</label>
+      <div class="pack-radios" id="np-packs"></div>
+      <label for="np-conf">Config</label>
+      <textarea id="np-conf"></textarea>
+      <div class="actions">
+        <button type="button" class="btn" id="np-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" id="np-ok">OK</button>
       </div>
     </div>
   </div>
@@ -245,12 +282,14 @@ function cardEl(task, opts) {
     card.appendChild(status);
   }
   card.onclick = () => {
-    openGrowable("/task?name=" + encodeURIComponent(task.name || ""), "task-" + (task.name || ""));
+    const qs = "name=" + encodeURIComponent(task.name || "")
+      + (task.project ? "&project=" + encodeURIComponent(task.project) : "");
+    openGrowable("/task?" + qs, "task-" + (task.name || ""));
   };
   return card;
 }
 
-function columnEl(lane, tasks) {
+function columnEl(lane, tasks, project) {
   const col = document.createElement("div");
   col.className = "col";
   col.dataset.lane = lane;
@@ -258,7 +297,7 @@ function columnEl(lane, tasks) {
   heading.textContent = displayName(lane);
   const body = document.createElement("div");
   body.className = "col-body";
-  body.id = "lane-" + lane;
+  body.id = "lane-" + (project ? project + "-" : "") + lane;
   const mine = tasks.filter((task) => task.lane === lane);
   let i = 0;
   while (i < mine.length) {
@@ -282,17 +321,95 @@ function columnEl(lane, tasks) {
   return col;
 }
 
+function projectBand(proj) {
+  const band = document.createElement("div");
+  band.className = "project-band";
+  band.dataset.project = proj.name || "";
+  const header = document.createElement("div");
+  header.className = "project-header";
+  const title = document.createElement("h2");
+  title.textContent = proj.name || "";
+  const nt = document.createElement("button");
+  nt.type = "button";
+  nt.className = "btn btn-primary btn-sm";
+  nt.textContent = "New Task";
+  nt.onclick = () => openNewTask(proj.name);
+  const cl = document.createElement("button");
+  cl.type = "button";
+  cl.className = "btn btn-sm";
+  cl.textContent = "Close";
+  cl.onclick = () => closeProject(proj.name);
+  header.append(title, nt, cl);
+  const cols = document.createElement("div");
+  cols.className = "columns";
+  const lanes = (proj.lanes || []).concat(["done"]);
+  lanes.forEach((lane) => cols.appendChild(columnEl(lane, proj.tasks || [], proj.name)));
+  band.append(header, cols);
+  return band;
+}
+
 function renderBoard(data) {
-  const columns = $("columns");
+  const board = document.querySelector(".board");
+  if (data.forge) {
+    board.replaceChildren();
+    (data.projects || []).forEach((proj) => board.appendChild(projectBand(proj)));
+    return;
+  }
+  let columns = $("columns");
+  if (!columns) {
+    columns = document.createElement("div");
+    columns.id = "columns";
+    columns.className = "columns";
+    board.replaceChildren(columns);
+  }
   columns.replaceChildren();
   const lanes = (data.lanes || []).concat(["done"]);
   const tasks = data.tasks || [];
   lanes.forEach((lane) => columns.appendChild(columnEl(lane, tasks)));
 }
 
+let forgePacks = [];
+let allProjects = [];
+let openProjects = [];
+let taskProject = "";
+
+function fillOpenMenu() {
+  const list = $("open-project-list");
+  if (!list) return;
+  list.replaceChildren();
+  allProjects.forEach((name) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = name + (openProjects.indexOf(name) >= 0 ? " (open)" : "");
+    btn.onclick = (event) => {
+      event.stopPropagation();
+      $("open-project-menu").classList.remove("open");
+      openProject(name);
+    };
+    list.appendChild(btn);
+  });
+  if (!allProjects.length) {
+    const empty = document.createElement("div");
+    empty.className = "batch-item";
+    empty.textContent = "No projects";
+    list.appendChild(empty);
+  }
+}
+
 function renderChrome(data) {
   const master = data.master_display || displayName(data.master_role);
   const masterRole = data.master_role || "";
+  const forge = !!data.forge;
+  $("pack-title").textContent = forge ? "SwarmForge" : "SwarmForge Pack";
+  $("btn-new-task").style.display = forge ? "none" : "";
+  $("btn-new-project").style.display = forge ? "" : "none";
+  $("open-project-menu").style.display = forge ? "" : "none";
+  if (forge) {
+    forgePacks = data.packs || [];
+    allProjects = data.all_projects || [];
+    openProjects = data.open_projects || [];
+    fillOpenMenu();
+  }
   $("pack-meta").replaceChildren();
   const dot = document.createElement("span");
   dot.className = "dot";
@@ -377,6 +494,7 @@ function workRow(item) {
   link.type = "button";
   link.className = "linkish";
   link.setAttribute("data-open-agent", item.role || "");
+  if (item.project) link.setAttribute("data-open-project", item.project);
   link.title = "open " + (item.role || "") + " session";
   link.textContent = item.role || "";
   const therm = document.createElement("span");
@@ -398,6 +516,25 @@ function workRow(item) {
 }
 
 function renderWork(data) {
+  if (data.forge) {
+    const wrap = document.querySelector(".work-wrap");
+    wrap.replaceChildren();
+    (data.projects || []).forEach((proj) => {
+      const band = document.createElement("div");
+      band.className = "work-band";
+      const h = document.createElement("h3");
+      h.textContent = proj.name || "";
+      const table = document.createElement("table");
+      table.className = "work";
+      table.innerHTML = "<thead><tr><th>Task</th><th>Role</th><th></th><th>Age</th></tr></thead>";
+      const tbody = document.createElement("tbody");
+      (proj.work_in_flight || []).forEach((item) => tbody.appendChild(workRow(item)));
+      table.appendChild(tbody);
+      band.append(h, table);
+      wrap.appendChild(band);
+    });
+    return;
+  }
   const rows = $("work-rows");
   const items = data.work_in_flight || [];
   const live = {};
@@ -575,9 +712,10 @@ function docMark(path, reviews) {
   return mark;
 }
 
-async function viewDoc(path, approvalId) {
+async function viewDoc(path, approvalId, project) {
   const qs = "/api/doc?path=" + encodeURIComponent(path) +
-    (approvalId ? "&id=" + encodeURIComponent(approvalId) : "");
+    (approvalId ? "&id=" + encodeURIComponent(approvalId) : "") +
+    (project ? "&project=" + encodeURIComponent(project) : "");
   const res = await fetch(qs);
   const data = res.ok ? await res.json() : {text: "Not found", history: [], has_diff: false, lines: []};
   const name = fileName(path);
@@ -623,7 +761,7 @@ function artifactMenu(paths, item) {
       event.stopPropagation();
       wrap.classList.remove("open");
       if (id) openDocMenus.delete(id);
-      viewDoc(path, id);
+      viewDoc(path, id, item.project);
     };
     list.appendChild(choice);
   });
@@ -666,7 +804,7 @@ function attentionRow(item) {
   pill.className = "pill pill-warn";
   pill.textContent = "Approval";
   const summary = document.createElement("span");
-  summary.textContent = item.gate + " · " + item.task;
+  summary.textContent = (item.project ? item.project + " · " : "") + item.gate + " · " + item.task;
   row.append(pill, summary);
   if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts, item));
   const reject = document.createElement("button");
@@ -730,7 +868,8 @@ function clarificationRow(item) {
   row.className = "att-row";
   const pill = document.createElement("span");
   pill.className = "pill pill-warn";
-  pill.textContent = "Clarification requested from: " + (item.role || "agent");
+  pill.textContent = (item.project ? item.project + " · " : "") +
+    "Clarification requested from: " + (item.role || "agent");
   const summary = document.createElement("span");
   summary.textContent = item.body || "";
   const input = document.createElement("input");
@@ -817,16 +956,127 @@ async function loadState() {
 
 function closeNewTask() {
   $("new-task-layer").classList.remove("open");
+  taskProject = "";
+}
+
+function openNewTask(project) {
+  taskProject = project || "";
+  $("new-task-layer").classList.add("open");
+  $("nt-name").focus();
+}
+
+function selectedPack() {
+  const box = $("np-packs").querySelector("input[name=np-pack]:checked");
+  return box ? box.value : "";
+}
+
+function updateInferred() {
+  const github = $("np-github").checked;
+  const raw = $("np-name").value.trim();
+  let name = raw;
+  if (github) {
+    name = raw.replace(/\.git$/, "").replace(/^https?:\/\/github.com\//, "");
+    name = name.split("/").filter(Boolean).pop() || name;
+  }
+  $("np-inferred").textContent = github && name ? "Directory: " + name : "";
+}
+
+function fillPackRadios() {
+  const box = $("np-packs");
+  box.replaceChildren();
+  forgePacks.forEach((pack, i) => {
+    const label = document.createElement("label");
+    const radio = document.createElement("input");
+    radio.type = "radio";
+    radio.name = "np-pack";
+    radio.value = pack.name;
+    if (i === 0) radio.checked = true;
+    radio.onchange = () => { $("np-conf").value = pack.conf || ""; };
+    label.append(radio, " " + pack.name);
+    box.appendChild(label);
+  });
+  if (forgePacks[0]) $("np-conf").value = forgePacks[0].conf || "";
+}
+
+function openNewProject() {
+  fillPackRadios();
+  $("np-name").value = "";
+  $("np-github").checked = false;
+  $("np-mission").value = "";
+  updateInferred();
+  $("new-project-layer").classList.add("open");
+  $("np-name").focus();
+}
+
+function closeNewProject() {
+  $("new-project-layer").classList.remove("open");
+}
+
+async function submitNewProject() {
+  const name = $("np-name").value.trim();
+  const pack = selectedPack();
+  if (!name || !pack) return;
+  const res = await fetch("/api/projects", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      name,
+      github: $("np-github").checked,
+      pack,
+      conf: $("np-conf").value,
+      mission: $("np-mission").value
+    })
+  });
+  if (!res.ok) {
+    let msg = "Could not create project";
+    try { msg = (await res.json()).error || msg; } catch (_) {}
+    alert(msg);
+    return;
+  }
+  closeNewProject();
+  loadState();
+}
+
+async function openProject(name) {
+  const res = await fetch("/api/projects/open", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name})
+  });
+  if (!res.ok) {
+    let msg = "Could not open project";
+    try { msg = (await res.json()).error || msg; } catch (_) {}
+    alert(msg);
+    return;
+  }
+  loadState();
+}
+
+async function closeProject(name) {
+  const res = await fetch("/api/projects/close", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name})
+  });
+  if (!res.ok) {
+    let msg = "Could not close project";
+    try { msg = (await res.json()).error || msg; } catch (_) {}
+    alert(msg);
+    return;
+  }
+  loadState();
 }
 
 async function submitNewTask() {
   const name = $("nt-name").value.trim();
   const text = $("nt-text").value;
   if (!name) return;
+  const payload = {name, text};
+  if (taskProject) payload.project = taskProject;
   const res = await fetch("/api/tasks", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name, text})
+    body: JSON.stringify(payload)
   });
   if (!res.ok) {
     let msg = "Could not create task";
@@ -855,15 +1105,18 @@ async function deleteTask(name) {
 }
 
 let rejectApprovalId = "";
+let rejectApprovalProject = "";
 let rejectHasComments = false;
 function closeRejectDialog() {
   $("reject-layer").classList.remove("open");
   rejectApprovalId = "";
+  rejectApprovalProject = "";
   rejectHasComments = false;
 }
 
 function openRejectDialog(item) {
   rejectApprovalId = item && item.id ? item.id : "";
+  rejectApprovalProject = (item && item.project) || "";
   rejectHasComments = hasRemedialComments(item);
   $("rt-title").textContent = (item && item.task) || "Rejected task";
   $("rt-text").value = "";
@@ -872,10 +1125,12 @@ function openRejectDialog(item) {
 
 async function retryRejected() {
   if (!rejectApprovalId) return;
+  const payload = {id: rejectApprovalId, comments: $("rt-text").value};
+  if (rejectApprovalProject) payload.project = rejectApprovalProject;
   await fetch("/api/tasks/retry", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({id: rejectApprovalId, comments: $("rt-text").value})
+    body: JSON.stringify(payload)
   });
   closeRejectDialog();
   loadState();
@@ -883,10 +1138,12 @@ async function retryRejected() {
 
 async function deleteRejected() {
   if (!rejectApprovalId) return;
+  const payload = {id: rejectApprovalId};
+  if (rejectApprovalProject) payload.project = rejectApprovalProject;
   await fetch("/api/tasks/delete", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({id: rejectApprovalId})
+    body: JSON.stringify(payload)
   });
   closeRejectDialog();
   loadState();
@@ -1011,9 +1268,22 @@ async function teardownSwarm() {
   }
 }
 
-$("btn-new-task").onclick = () => {
-  $("new-task-layer").classList.add("open");
-  $("nt-name").focus();
+$("btn-new-task").onclick = () => openNewTask("");
+$("btn-new-project").onclick = openNewProject;
+$("np-cancel").onclick = closeNewProject;
+$("np-ok").onclick = submitNewProject;
+$("np-name").addEventListener("input", updateInferred);
+$("np-github").addEventListener("change", updateInferred);
+$("btn-open-project").onclick = (event) => {
+  event.stopPropagation();
+  const menu = $("open-project-menu");
+  menu.classList.toggle("open");
+  if (menu.classList.contains("open")) {
+    const list = $("open-project-list");
+    const box = event.currentTarget.getBoundingClientRect();
+    list.style.top = box.bottom + "px";
+    list.style.left = box.left + "px";
+  }
 };
 $("nt-cancel").onclick = closeNewTask;
 $("nt-ok").onclick = submitNewTask;
@@ -1038,7 +1308,11 @@ document.addEventListener("click", (event) => {
   const btn = event.target.closest("[data-open-agent]");
   if (!btn) return;
   const role = btn.getAttribute("data-open-agent");
-  if (role) openAgentWindow("/agent/" + encodeURIComponent(role), "agent-" + role);
+  const project = btn.getAttribute("data-open-project");
+  if (role) {
+    const qs = project ? "?project=" + encodeURIComponent(project) : "";
+    openAgentWindow("/agent/" + encodeURIComponent(role) + qs, "agent-" + role);
+  }
 });
 loadState();
 setInterval(loadState, 2000);

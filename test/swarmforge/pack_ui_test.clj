@@ -2327,6 +2327,116 @@
         (is (str/includes? argv "Does the bat drop to any of 20 rooms?"))
         (is (str/includes? argv "Yes, 1 to 20."))))))
 
+(defn seed-mini-forge! [root]
+  (fs/create-dirs (fs/path root "projects"))
+  (write-file (fs/path root "swarmforge/scripts/keep.sh") "#!/bin/sh\n")
+  (write-file (fs/path root "swarmforge/constitution/articles/engineering.prompt") "eng\n")
+  (write-file (fs/path root "swarmforge/constitution/articles/workflow.prompt") "wf\n")
+  (write-file (fs/path root "swarmforge/constitution/articles/handoffs.prompt") "ho\n")
+  (doseq [pack ["two-pack" "four-pack" "six-pack"]]
+    (write-file (fs/path root "packs" pack "swarmforge/swarmforge.conf")
+                "window specifier grok master\nwindow coder grok coder\n")
+    (write-file (fs/path root "packs" pack "swarmforge/constitution.prompt") "pack-const\n")
+    (write-file (fs/path root "packs" pack "swarmforge/roles/specifier.prompt") "spec\n")
+    (write-file (fs/path root "packs" pack "swarmforge/roles/coder.prompt") "coder\n")))
+
+(deftest forge-infers-github-project-name
+  (let [result (pack-web (tmp-dir) true "--test-inferred-name" "unclebob/swarm-forge" "github")]
+    (is (zero? (:exit result)))
+    (is (= "swarm-forge" (str/trim (:out result))))))
+
+(deftest forge-new-project-writes-mission-and-conf
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (let [result (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                               "--test-new-project" (str root) "cave" "four-pack" "Hunt the wumpus")
+          dest (fs/path root "projects/cave")]
+      (is (zero? (:exit result)) (:err result))
+      (is (fs/directory? dest))
+      (is (= "Hunt the wumpus\n" (slurp (str (fs/path dest "mission.md")))))
+      (is (fs/exists? (fs/path dest "swarmforge/swarmforge.conf")))
+      (is (fs/exists? (fs/path dest "swarmforge/roles/specifier.prompt")))
+      (is (str/includes? (slurp (str (fs/path dest ".swarmforge/pack"))) "four-pack"))
+      (is (str/includes? (slurp (str (fs/path root ".swarmforge/open-projects"))) "cave")))))
+
+(deftest forge-new-project-rejects-existing-name
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "one")
+    (let [result (run {:dir root :env {"SWARMFORGE_SKIP_START" "1"} :ok? false}
+                      (script "pack_web.sh")
+                      "--test-new-project" (str root) "cave" "two-pack" "two")]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "already exists")))))
+
+(deftest forge-open-already-open-alerts
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (let [result (run {:dir root :env {"SWARMFORGE_SKIP_START" "1"} :ok? false}
+                      (script "pack_web.sh")
+                      "--test-open-project" (str root) "cave")]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "already open")))))
+
+(deftest forge-close-leaves-the-directory
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (let [result (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                               "--test-close-project" (str root) "cave")]
+      (is (zero? (:exit result)) (:err result))
+      (is (fs/directory? (fs/path root "projects/cave")))
+      (is (fs/exists? (fs/path root "projects/cave/mission.md")))
+      (is (not (str/includes? (slurp (str (fs/path root ".swarmforge/open-projects"))) "cave"))))))
+
+(deftest forge-open-without-pack-file-is-rejected
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (fs/create-dirs (fs/path root "projects/orphan"))
+    (let [result (run {:dir root :env {"SWARMFORGE_SKIP_START" "1"} :ok? false}
+                      (script "pack_web.sh")
+                      "--test-open-project" (str root) "orphan")]
+      (is (not (zero? (:exit result))))
+      (is (str/includes? (str (:err result) (:out result)) "No pack recorded")))))
+
+(deftest forge-refresh-keeps-mission-and-conf
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "four-pack" "keep me")
+    (let [conf (fs/path root "projects/cave/swarmforge/swarmforge.conf")]
+      (spit (str conf) "window specifier grok master extra-flag\n")
+      (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                    "--test-close-project" (str root) "cave")
+      (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                    "--test-open-project" (str root) "cave")
+      (is (= "keep me\n" (slurp (str (fs/path root "projects/cave/mission.md")))))
+      (is (str/includes? (slurp (str conf)) "extra-flag")))))
+
+(deftest forge-state-tags-attention-with-project
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (write-file (fs/path root "projects/cave/.swarmforge/roles.tsv")
+                (format "specifier\tmaster\t%s\tspecifier\tSpecifier\tcodex\ttask\n"
+                        (fs/path root "projects/cave")))
+    (fs/create-dirs (fs/path root "projects/cave/.swarmforge/board"))
+    (write-file (fs/path root "projects/cave/.swarmforge/handoffs/pending_approval/50_hello.handoff")
+                "from: specifier\nto: coder\ntype: git_handoff\ntask: HTW\n\npayload\n")
+    (let [state (json/parse-string
+                 (:out (pack-web root true "--test-state" (str root)))
+                 true)
+          approval (first (:approvals state))]
+      (is (true? (:forge state)))
+      (is (= "cave" (:project approval)))
+      (is (= ["cave"] (:open_projects state)))
+      (is (= "cave" (:name (first (:projects state))))))))
+
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]
     (System/exit (+ fail error))))

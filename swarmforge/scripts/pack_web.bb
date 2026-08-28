@@ -9,6 +9,7 @@
             [org.httpkit.server :as http]))
 
 (def script-dir (fs/parent *file*))
+(load-file (str (fs/path script-dir "forge.bb")))
 
 (def usage-text
   (str "Usage:\n"
@@ -39,7 +40,11 @@
        "  pack_web.sh --test-retry-task <root> <id> <comments>\n"
        "  pack_web.sh --test-save-comments <root> <id> <path> <comments>\n"
        "  pack_web.sh --test-doc <root> <path>\n"
-       "  pack_web.sh --test-teardown <root> [TEARDOWN]"))
+       "  pack_web.sh --test-teardown <root> [TEARDOWN]\n"
+       "  pack_web.sh --test-new-project <root> <name> <pack> [mission]\n"
+       "  pack_web.sh --test-open-project <root> <name>\n"
+       "  pack_web.sh --test-close-project <root> <name>\n"
+       "  pack_web.sh --test-inferred-name <input> [github]"))
 
 (def example-task-name "htw-console-app")
 (def example-task-text
@@ -732,6 +737,58 @@
      :chat (list-chat root)
      :clarifications (list-clarifications root)}))
 
+(defn tagged [project items]
+  (mapv #(assoc % :project project) items))
+
+(defn open-project-root [forge name]
+  (str (forge/project-dir forge name)))
+
+(defn project-slice [forge name]
+  (let [root (open-project-root forge name)]
+    (try
+      {:name name
+       :open true
+       :lanes (lanes root)
+       :tasks (tagged name (tasks root))
+       :work_in_flight (tagged name (work-in-flight root))}
+      (catch Exception _
+        {:name name
+         :open true
+         :lanes []
+         :tasks []
+         :work_in_flight []}))))
+
+(defn forge-dashboard-state [root]
+  (let [open (forge/read-open-projects root)]
+    {:forge true
+     :master_role "lieutenant"
+     :master_display "Lieutenant"
+     :packs (mapv (fn [p] {:name p :conf (or (forge/pack-conf root p) "")})
+                  (forge/list-pack-names root))
+     :all_projects (forge/list-project-names root)
+     :open_projects open
+     :projects (mapv #(project-slice root %) open)
+     :approvals (vec (mapcat (fn [name]
+                               (try
+                                 (tagged name (approvals (open-project-root root name)))
+                                 (catch Exception _ [])))
+                             open))
+     :clarifications (vec (mapcat (fn [name]
+                                    (try
+                                      (tagged name (list-clarifications (open-project-root root name)))
+                                      (catch Exception _ [])))
+                                  open))
+     :chat (list-chat root)
+     :lanes []
+     :tasks []
+     :work_in_flight (vec (mapcat :work_in_flight
+                                  (map #(project-slice root %) open)))}))
+
+(defn api-state [root]
+  (if (forge/forge? root)
+    (forge-dashboard-state root)
+    (dashboard-state root)))
+
 (defn require-root! [root]
   (when (str/blank? root)
     (exit! 1 "Missing project root"))
@@ -910,9 +967,14 @@
     (queue-new-task-note! root task-id name (or text ""))))
 
 (defn post-tasks [root body]
-  (let [{:keys [name text]} (json/parse-string (or body "{}") true)]
+  (let [{:keys [name text project]} (json/parse-string (or body "{}") true)
+        dest (if (and (forge/forge? root) (not (str/blank? project)))
+               (str (forge/project-dir root project))
+               root)]
     (try
-      (create-task! root name text)
+      (when (and (forge/forge? root) (str/blank? project))
+        (throw (ex-info "Missing project" {:http-status 400})))
+      (create-task! dest name text)
       (json-ok)
       (catch Exception e
         (http-error (or (:http-status (ex-data e)) 400) (.getMessage e))))))
@@ -1424,6 +1486,39 @@
      :body (pane-content root role)}
     {:status 404 :body "Not found"}))
 
+(defn request-project-root [forge uri]
+  (if-not (forge/forge? forge)
+    forge
+    (if-let [name (not-empty (query-value uri "project"))]
+      (str (forge/project-dir forge name))
+      forge)))
+
+(defn body-map [body]
+  (try
+    (json/parse-string (or body "{}") true)
+    (catch Exception _ {})))
+
+(defn json-ok-data [m]
+  {:status 200
+   :headers {"Content-Type" "application/json"}
+   :body (json/generate-string (merge {:ok true} m))})
+
+(defn find-approval-root [forge id]
+  (or (some (fn [name]
+              (let [proot (str (forge/project-dir forge name))]
+                (when (fs/regular-file? (pending-file proot id))
+                  proot)))
+            (forge/read-open-projects forge))
+      (throw (ex-info (str "Unknown approval: " id) {:http-status 404}))))
+
+(defn find-clar-root [forge id]
+  (or (some (fn [name]
+              (let [proot (str (forge/project-dir forge name))]
+                (when (fs/regular-file? (clar-pending-file proot id))
+                  proot)))
+            (forge/read-open-projects forge))
+      (throw (ex-info (str "Unknown clarification: " id) {:http-status 404}))))
+
 (defn handle-get [root uri]
   (cond
     (= "/" uri)
@@ -1434,22 +1529,22 @@
     (= "/api/state" uri)
     {:status 200
      :headers {"Content-Type" "application/json"}
-     :body (json/generate-string (dashboard-state root))}
+     :body (json/generate-string (api-state root))}
 
     (agent-pane-role uri)
-    (get-agent-pane root uri)
+    (get-agent-pane (request-project-root root uri) uri)
 
     (agent-role uri)
-    (get-agent root uri)
+    (get-agent (request-project-root root uri) uri)
 
     (task-query-name uri)
-    (get-task root uri)
+    (get-task (request-project-root root uri) uri)
 
     (str/starts-with? (first (str/split (or uri "") #"\?")) "/api/doc")
-    (get-api-doc root uri)
+    (get-api-doc (request-project-root root uri) uri)
 
     (str/starts-with? (or uri "") "/doc")
-    (get-doc root uri)
+    (get-doc (request-project-root root uri) uri)
 
     :else {:status 404 :body "Not found"}))
 
@@ -1519,6 +1614,8 @@
     (swarm-cleanup! root (tmux-socket root))))
 
 (defn run-teardown! [root]
+  (when (forge/forge? root)
+    (forge/close-all-projects! root))
   (close-swarm! root)
   (stop-handoffd! root)
   (kill-all-sessions-on-socket! (tmux-socket root))
@@ -1559,15 +1656,50 @@
      :headers {"Content-Type" "text/plain; charset=utf-8"}
      :body "Teardown requires confirm=TEARDOWN (JSON {\"confirm\":\"TEARDOWN\"}).\n"}))
 
+(defn post-new-project [root body]
+  (let [parsed (body-map body)
+        created (forge/instantiate! root parsed)]
+    (forge/open-project! root (:name created))
+    (json-ok-data created)))
+
+(defn post-open-project [root body]
+  (json-ok-data (forge/open-project! root (:name (body-map body)))))
+
+(defn post-close-project [root body]
+  (json-ok-data (forge/close-project! root (:name (body-map body)))))
+
+(defn scoped-approval-root [root uri body]
+  (if-not (forge/forge? root)
+    root
+    (let [m (body-map body)
+          id (or (:id (approval-route uri)) (:id m))
+          project (:project m)]
+      (cond
+        (not (str/blank? project)) (str (forge/project-dir root project))
+        (not (str/blank? id)) (find-approval-root root id)
+        :else (throw (ex-info "Missing project" {:http-status 400}))))))
+
+(defn scoped-clar-root [root uri]
+  (if-not (forge/forge? root)
+    root
+    (find-clar-root root (clarification-route uri))))
+
 (defn handle-post [root uri body]
   (cond
+    (= "/api/projects" uri) (post-new-project root body)
+    (= "/api/projects/open" uri) (post-open-project root body)
+    (= "/api/projects/close" uri) (post-close-project root body)
     (= "/api/tasks" uri) (post-tasks root body)
-    (= "/api/tasks/delete" uri) (post-delete-task root body)
-    (= "/api/tasks/retry" uri) (post-retry-task root body)
+    (= "/api/tasks/delete" uri)
+    (post-delete-task (scoped-approval-root root uri body) body)
+    (= "/api/tasks/retry" uri)
+    (post-retry-task (scoped-approval-root root uri body) body)
     (= "/api/chat" uri) (post-chat root body)
     (= "/api/teardown" uri) (teardown-response root body)
-    (str/starts-with? (or uri "") "/api/approvals/") (post-approval root uri body)
-    (str/starts-with? (or uri "") "/api/clarifications/") (post-clarification root uri body)
+    (str/starts-with? (or uri "") "/api/approvals/")
+    (post-approval (scoped-approval-root root uri body) uri body)
+    (str/starts-with? (or uri "") "/api/clarifications/")
+    (post-clarification (scoped-clar-root root uri) uri body)
     :else {:status 404 :body "Not found"}))
 
 (defn handle-request [root {:keys [method uri body]}]
@@ -1799,6 +1931,40 @@
                                            (when-not (str/blank? id)
                                              (str "&id=" id)))})))
   (flush))
+
+(defn test-project-http! [resp]
+  (print (:body resp))
+  (flush)
+  (when-not (= 200 (:status resp))
+    (binding [*out* *err*]
+      (println (:body resp)))
+    (System/exit 1)))
+
+(defn test-new-project! [root name pack mission]
+  (test-project-http!
+   (handle-request (require-root! root)
+                   {:method "POST"
+                    :uri "/api/projects"
+                    :body (json/generate-string {:name name
+                                                 :pack pack
+                                                 :mission (or mission "")})})))
+
+(defn test-open-project! [root name]
+  (test-project-http!
+   (handle-request (require-root! root)
+                   {:method "POST"
+                    :uri "/api/projects/open"
+                    :body (json/generate-string {:name name})})))
+
+(defn test-close-project! [root name]
+  (test-project-http!
+   (handle-request (require-root! root)
+                   {:method "POST"
+                    :uri "/api/projects/close"
+                    :body (json/generate-string {:name name})})))
+
+(defn test-inferred-name! [input github]
+  (println (forge/inferred-name input (= "github" github))))
 
 (defn test-teardown! [root confirm]
   (binding [*sync-teardown?* true]

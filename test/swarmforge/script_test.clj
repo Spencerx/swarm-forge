@@ -1026,44 +1026,53 @@
 (deftest get-swarm-forge-copies-only-swarmforge-owned-paths
   (let [host (tmp-dir)
         base (tmp-dir)
-        pack (tmp-dir)]
+        packs (tmp-dir)]
     (try
       (write-file (fs/path host "README.md") "host-readme\n")
       (write-file (fs/path host "bb.edn") "{:paths [\"test\"]}\n")
       (write-file (fs/path host "test/keep.clj") "keep\n")
       (doseq [name ["swarmforge.sh" "handoffd.bb" "done_with_current.sh"]]
         (write-file (fs/path base "swarmforge/scripts" name) (str name "\n")))
+      (write-file (fs/path base "swarm") "#!/bin/sh\necho swarm\n")
+      (write-file (fs/path base "swarmforge/constitution.prompt") "MAIN-CONSTITUTION\n")
+      (write-file (fs/path base "swarmforge/roles/lieutenant.prompt") "LIEUTENANT\n")
       (write-file (fs/path base "swarmforge/constitution/articles/engineering.prompt") "MAIN-ENGINEERING\n")
       (write-file (fs/path base "swarmforge/constitution/articles/workflow.prompt") "MAIN-WORKFLOW\n")
       (write-file (fs/path base "swarmforge/constitution/articles/handoffs.prompt") "MAIN-HANDOFFS\n")
-      (write-file (fs/path pack "swarm") "#!/bin/sh\necho swarm\n")
-      (write-file (fs/path pack "README.md") "pack-readme\n")
-      (write-file (fs/path pack "bb.edn") "pack-bb\n")
-      (write-file (fs/path pack "swarmforge/swarmforge.conf") "window specifier master session Specifier codex task\n")
-      (write-file (fs/path pack "swarmforge/constitution.prompt") "PACK-CONSTITUTION\n")
-      (write-file (fs/path pack "swarmforge/roles/specifier.prompt") "specifier\n")
-      (write-file (fs/path pack "swarmforge/constitution/articles/engineering.prompt") "PACK-STALE-ENGINEERING\n")
-      (write-file (fs/path pack "swarmforge/constitution/articles/project.prompt") "PACK-PROJECT\n")
-      (write-file (fs/path pack "swarmforge/constitution/articles/local-workflow.prompt") "PACK-LOCAL-WORKFLOW\n")
+      (doseq [pack-name ["two-pack" "four-pack" "six-pack"]]
+        (let [pack (fs/path packs pack-name)]
+          (write-file (fs/path pack "swarm") "#!/bin/sh\necho swarm\n")
+          (write-file (fs/path pack "README.md") "pack-readme\n")
+          (write-file (fs/path pack "bb.edn") "pack-bb\n")
+          (write-file (fs/path pack "swarmforge/swarmforge.conf")
+                      "window specifier grok master\n")
+          (write-file (fs/path pack "swarmforge/constitution.prompt") "PACK-CONSTITUTION\n")
+          (write-file (fs/path pack "swarmforge/roles/specifier.prompt") "specifier\n")
+          (write-file (fs/path pack "swarmforge/constitution/articles/engineering.prompt") "PACK-STALE-ENGINEERING\n")
+          (write-file (fs/path pack "swarmforge/constitution/articles/project.prompt") "PACK-PROJECT\n")
+          (write-file (fs/path pack "swarmforge/constitution/articles/local-workflow.prompt") "PACK-LOCAL-WORKFLOW\n")))
       (let [result (run {:dir host
                          :env {"SWARMFORGE_BASE_DIR" (str base)
-                               "SWARMFORGE_PACK_DIR" (str pack)}}
-                        (str (fs/path repo-root "get-swarm-forge"))
-                        "two-pack")]
-        (is (zero? (:exit result)))
+                               "SWARMFORGE_PACKS_DIR" (str packs)}}
+                        (str (fs/path repo-root "get-swarm-forge")))]
+        (is (zero? (:exit result)) (:err result))
         (is (= "host-readme\n" (slurp (str (fs/path host "README.md")))))
         (is (= "{:paths [\"test\"]}\n" (slurp (str (fs/path host "bb.edn")))))
         (is (= "keep\n" (slurp (str (fs/path host "test/keep.clj")))))
         (is (= "MAIN-ENGINEERING\n" (slurp (str (fs/path host "swarmforge/constitution/articles/engineering.prompt")))))
         (is (= "MAIN-WORKFLOW\n" (slurp (str (fs/path host "swarmforge/constitution/articles/workflow.prompt")))))
         (is (= "MAIN-HANDOFFS\n" (slurp (str (fs/path host "swarmforge/constitution/articles/handoffs.prompt")))))
-        (is (= "PACK-PROJECT\n" (slurp (str (fs/path host "swarmforge/constitution/articles/project.prompt")))))
-        (is (= "PACK-LOCAL-WORKFLOW\n" (slurp (str (fs/path host "swarmforge/constitution/articles/local-workflow.prompt")))))
-        (is (= "PACK-CONSTITUTION\n" (slurp (str (fs/path host "swarmforge/constitution.prompt")))))
-        (is (fs/exists? (fs/path host "swarmforge/roles/specifier.prompt")))
+        (is (= "MAIN-CONSTITUTION\n" (slurp (str (fs/path host "swarmforge/constitution.prompt")))))
+        (is (fs/exists? (fs/path host "swarmforge/roles/lieutenant.prompt")))
+        (is (not (fs/exists? (fs/path host "swarmforge/roles/specifier.prompt"))))
+        (is (not (fs/exists? (fs/path host "swarmforge/constitution/articles/project.prompt"))))
+        (is (= "PACK-PROJECT\n" (slurp (str (fs/path host "packs/two-pack/swarmforge/constitution/articles/project.prompt")))))
+        (is (= "PACK-LOCAL-WORKFLOW\n" (slurp (str (fs/path host "packs/four-pack/swarmforge/constitution/articles/local-workflow.prompt")))))
+        (is (fs/directory? (fs/path host "projects")))
+        (is (fs/exists? (fs/path host "packs/six-pack/swarmforge/swarmforge.conf")))
         (is (fs/exists? (fs/path host "swarm"))))
       (finally
         (fs/delete-tree host)
         (fs/delete-tree base)
-        (fs/delete-tree pack)))))
+        (fs/delete-tree packs)))))
 
