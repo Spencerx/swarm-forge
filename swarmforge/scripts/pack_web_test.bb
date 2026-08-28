@@ -34,6 +34,7 @@
     "--test-answer-clarification" (test-answer-clarification! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-task" (test-task! (second args) (nth args 2 nil))
     "--test-doc" (test-doc! (second args) (nth args 2 nil))
+    "--test-api-doc" (test-api-doc! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-delete-task" (test-delete-task! (second args) (nth args 2 nil))
     "--test-delete-approval" (test-delete-approval! (second args) (nth args 2 nil))
     "--test-retry-task" (test-retry-task! (second args) (nth args 2 nil) (nth args 3 nil))

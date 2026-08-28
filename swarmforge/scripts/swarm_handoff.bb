@@ -772,11 +772,15 @@
       (finally
         (fs/delete lock-dir)))))
 
-(defn body [type sender canonical-commit note-message reverse?]
+(defn structure-instruction [handback?]
+  (if handback?
+    "The inbound tree is the structure. Replay this role's current task onto that shape."
+    "This role's current tree is the structure. Replay the inbound work onto that shape."))
+
+(defn body [type sender canonical-commit note-message handback?]
   (case type
     "git_handoff" (str "Re-read your role and constitution.\n\nmerge_and_process.sh " sender " " canonical-commit
-                       (when reverse?
-                         "\n\nThe inbound tree is the structure. Replay this role's current task onto that shape."))
+                       "\n\n" (structure-instruction handback?))
     "note" (str "Re-read your role and constitution.\n\n" note-message)))
 
 (defn write-handoff! [{:keys [headers recipients canonical-commit artifacts sender
@@ -796,7 +800,8 @@
         tmp-dir (fs/path outbox-dir "tmp")
         tmp-file (fs/path tmp-dir (str filename ".tmp"))
         outbox-file (fs/path outbox-dir filename)
-        handoff-body (body type sender canonical-commit (get headers "message") reverse?)
+        handoff-body (body type sender canonical-commit (get headers "message")
+                           (or reverse? non-forwarding?))
         lines (cond-> [(str "id: " id)
                        (str "from: " sender)
                        (str "to: " (str/join "," recipients))
