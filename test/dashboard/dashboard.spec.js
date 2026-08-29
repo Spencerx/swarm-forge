@@ -23,6 +23,7 @@ function seedProject(project) {
     "HTW\tspecifier\t2026-01-01T00:00:00Z\t2026-01-01T00:00:00Z\t20260101T000000Z-htw\t0\n"
   );
   writeFile(path.join(project, ".swarmforge/board/HTW.txt"), "Integrate the cave.\n");
+  writeFile(path.join(project, "mission.md"), "Hunt the wumpus from the cave.\n");
   writeFile(path.join(project, "tasks/HTW.md"), "# HTW\n\nIntegrate the cave.\n");
   writeFile(path.join(project, "features/console.feature"), "Feature: console\n");
   writeFile(
@@ -121,6 +122,34 @@ test.describe("pack dashboard", () => {
     await expect(page.locator(".pack-actions #btn-new-task")).toHaveCount(1);
     await expect(page.locator(".project-header button", { hasText: "New Task" })).toBeVisible();
     await expect(page.locator(".board-toolbar")).toHaveCount(0);
+  });
+
+  test("clicking the project name opens a growable mission window", async ({ page, context }) => {
+    await page.goto(handle.url);
+    const popupPromise = context.waitForEvent("page");
+    await page.locator(".project-header .project-name", { hasText: "htw" }).click();
+    const win = await popupPromise;
+    await win.waitForLoadState("domcontentloaded");
+    await expect(win.locator("#mission-body")).toContainText("Hunt the wumpus from the cave.");
+  });
+
+  test("Work Queue / lieutenant split is draggable", async ({ page }) => {
+    await page.goto(handle.url);
+    const work = page.locator(".work-sec");
+    const chat = page.locator(".ts");
+    const split = page.locator(".rail-splitter");
+    await expect(split).toBeVisible();
+    const beforeWork = await work.boundingBox();
+    const beforeChat = await chat.boundingBox();
+    const box = await split.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + 80, { steps: 5 });
+    await page.mouse.up();
+    const afterWork = await work.boundingBox();
+    const afterChat = await chat.boundingBox();
+    expect(afterWork.height).toBeGreaterThan(beforeWork.height);
+    expect(afterChat.height).toBeLessThan(beforeChat.height);
   });
 
   test("New Task focuses the name field", async ({ page }) => {

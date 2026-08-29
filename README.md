@@ -130,6 +130,8 @@ While a swarm is active, SwarmForge tries to prevent the host from sleeping. On 
 
 ## Pack Cockpit
 
+![SwarmForge dashboard](project-swarm.jpg)
+
 The pack cockpit is a local web dashboard served from `main`'s scripts
 (`pack_web`). It is the forge operator surface: several projects can run at
 once. Chat talks to the **lieutenant**, who oversees the whole swarm, not to

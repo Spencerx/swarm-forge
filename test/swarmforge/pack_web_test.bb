@@ -27,6 +27,7 @@
     "--test-pane" (test-pane! (second args) (nth args 2 nil) (nth args 3 nil))
     "--test-agent-page" (test-agent-page! (second args) (nth args 2 nil))
     "--test-heat" (test-heat! (second args))
+    "--test-heat-isolation" (test-heat-isolation! (second args) (nth args 2 nil))
     "--test-heat-codex" (test-heat-codex! (second args))
     "--test-heat-reorder" (test-heat-reorder! (second args))
     "--test-heat-head" (test-heat-head! (second args))
@@ -49,6 +50,7 @@
     "--test-open-project" (test-open-project! (second args) (nth args 2 nil))
     "--test-close-project" (test-close-project! (second args) (nth args 2 nil))
     "--test-inferred-name" (test-inferred-name! (second args) (nth args 2 nil))
+    "--test-mission" (test-mission! (second args) (nth args 2 nil))
     (do (usage)
         (exit! 1 nil))))
 

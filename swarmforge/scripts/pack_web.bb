@@ -25,6 +25,7 @@
        "  pack_web.sh --test-pane <root> <role>\n"
        "  pack_web.sh --test-agent-page [role]\n"
        "  pack_web.sh --test-heat <root>\n"
+       "  pack_web.sh --test-heat-isolation <root-a> <root-b>\n"
        "  pack_web.sh --test-heat-codex <root>\n"
        "  pack_web.sh --test-heat-reorder <root>\n"
        "  pack_web.sh --test-heat-head <root>\n"
@@ -44,7 +45,8 @@
        "  pack_web.sh --test-new-project <root> <name> <pack> [mission]\n"
        "  pack_web.sh --test-open-project <root> <name>\n"
        "  pack_web.sh --test-close-project <root> <name>\n"
-       "  pack_web.sh --test-inferred-name <input> [github]"))
+       "  pack_web.sh --test-inferred-name <input> [github]\n"
+       "  pack_web.sh --test-mission <root> [project]"))
 
 (def example-task-name "htw-console-app")
 (def example-task-text
@@ -268,6 +270,9 @@
         (recur (next lines) current out))
       (cond-> out current (conj current)))))
 
+(defn pane-cache-key [root role]
+  [(str root) (str role)])
+
 (defn matching-status-sentences [text backend]
   (let [tail (last-n-lines (pane-sample text backend) 20)
         joined (str/join "\n" tail)
@@ -298,7 +303,7 @@
         text (when row (live-pane-text root role))
         backend (when row (backend-name row))]
     (if row
-      (im-status-lines role text backend)
+      (im-status-lines (pane-cache-key root role) text backend)
       [])))
 
 (defn pane-status-for [root role]
@@ -589,18 +594,18 @@
 (defn heat-from-count [n]
   (min 6 (long n)))
 
-(defn record-heat! [role text backend]
+(defn record-heat! [key text backend]
   (let [tail (last-n-lines (pane-sample text backend) 20)
         bag (frequencies tail)
-        prev (get @pane-heat role)
+        prev (get @pane-heat key)
         n (if (:bag prev) (bag-diff (:bag prev) bag) 0)
         heat (heat-from-count n)]
-    (swap! pane-heat assoc role {:bag bag :heat heat})
+    (swap! pane-heat assoc key {:bag bag :heat heat})
     heat))
 
-(defn role-heat [role alive? text backend]
+(defn role-heat [root role alive? text backend]
   (if alive?
-    (record-heat! role text backend)
+    (record-heat! (pane-cache-key root role) text backend)
     0))
 
 (defn cards-in-lane [all-tasks lane]
@@ -648,7 +653,7 @@
         names (work-task-names files cards)
         batch-names (in-process-batch-task-names row)]
     (queue-row role names batch-names busy? alive?
-               (role-heat role (or alive? (some? *pane-text*)) text (backend-name row))
+               (role-heat root role (or alive? (some? *pane-text*)) text (backend-name row))
                (or (:updated_at from-file) (:updated_at card) ""))))
 
 (defn work-in-flight [root]
@@ -774,7 +779,8 @@
          :work_in_flight []}))))
 
 (defn forge-dashboard-state [root]
-  (let [open (forge/read-open-projects root)]
+  (let [open (forge/read-open-projects root)
+        projects (mapv #(project-slice root %) open)]
     {:forge true
      :master_role "lieutenant"
      :master_display "Lieutenant"
@@ -782,7 +788,7 @@
                   (forge/list-pack-names root))
      :all_projects (forge/list-project-names root)
      :open_projects open
-     :projects (mapv #(project-slice root %) open)
+     :projects projects
      :approvals (vec (mapcat (fn [name]
                                (try
                                  (tagged name (approvals (open-project-root root name)))
@@ -797,8 +803,7 @@
      :lieutenant_status (pane-status-lines-for root "lieutenant")
      :lanes []
      :tasks []
-     :work_in_flight (vec (mapcat :work_in_flight
-                                  (map #(project-slice root %) open)))}))
+     :work_in_flight (vec (mapcat :work_in_flight projects))}))
 
 (defn api-state [root]
   (if (forge/forge? root)
@@ -1292,6 +1297,12 @@
                (under-dir? file (existing-path root "qa"))
                (under-dir? file (existing-path root "tasks")))))))
 
+(defn get-mission [root]
+  (let [file (fs/path root "mission.md")]
+    {:status 200
+     :headers {"Content-Type" "text/plain; charset=utf-8"}
+     :body (if (fs/regular-file? file) (slurp (str file)) "")}))
+
 (defn get-doc [root uri]
   (let [rel (query-value uri "path")]
     (if (allowed-doc? root rel)
@@ -1566,6 +1577,9 @@
 
     (str/starts-with? (or uri "") "/doc")
     (get-doc (request-project-root root uri) uri)
+
+    (= "/api/mission" (first (str/split (or uri "") #"\?")))
+    (get-mission (request-project-root root uri))
 
     :else {:status 404 :body "Not found"}))
 
@@ -1852,6 +1866,23 @@
 (defn test-heat! [root]
   (print-heat-pair! root "alpha\nline two\n" "beta\nline two\nchanged output\n"))
 
+(defn print-heat-isolation! [root-a root-b]
+  (reset! pane-heat {})
+  (binding [*pane-text* "stable-a\n"]
+    (work-in-flight root-a))
+  (binding [*pane-text* "stable-b\n"]
+    (work-in-flight root-b))
+  (let [changed (binding [*pane-text* "changed-a\nmore\n"]
+                  (:activity (first (work-in-flight root-a))))
+        stable (binding [*pane-text* "stable-b\n"]
+                 (:activity (first (work-in-flight root-b))))]
+    (println (json/generate-string {:changed changed :stable stable}))))
+
+(defn test-heat-isolation! [root-a root-b]
+  (require-root! root-a)
+  (require-root! root-b)
+  (print-heat-isolation! root-a root-b))
+
 (defn test-heat-codex! [root]
   (print-heat-pair! root
                     "I'll load the SwarmForge instructions.\n\nesc to interrupt · 3s\n"
@@ -1935,6 +1966,14 @@
   (print (:body (handle-request (require-root! root)
                                 {:method "GET"
                                  :uri (str "/task?name=" name)})))
+  (flush))
+
+(defn test-mission! [root & [project]]
+  (print (:body (handle-request (require-root! root)
+                                {:method "GET"
+                                 :uri (str "/api/mission"
+                                           (when-not (str/blank? project)
+                                             (str "?project=" project)))})))
   (flush))
 
 (defn test-doc! [root path]

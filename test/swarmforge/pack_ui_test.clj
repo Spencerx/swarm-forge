@@ -1174,6 +1174,20 @@
         (.destroyForcibly proc)
         (.waitFor proc)))))
 
+(deftest pack-web-thermometer-heat-is-per-agent
+  ;; Given two pack roots each with a specifier
+  ;; When one pane changes and the other stays put
+  ;; Then only the changed agent's thermometer rises
+  (let [root-a (tmp-dir)
+        root-b (tmp-dir)
+        _ (setup-pack! root-a ["specifier"])
+        _ (setup-pack! root-b ["specifier"])
+        result (pack-web root-a false "--test-heat-isolation" (str root-a) (str root-b))
+        body (json/parse-string (:out result) true)]
+    (is (zero? (:exit result)))
+    (is (pos? (:changed body)))
+    (is (zero? (:stable body)))))
+
 (deftest pack-web-thermometer-heat-rises-when-pane-changes
   ;; Given a specifier row
   ;; When --test-heat samples two different pane texts
@@ -2464,6 +2478,49 @@
           project (pack-web root true "--test-pane" (str root) "specifier" "cave")]
       (is (str/includes? (:out host) "(no pane capture for specifier)"))
       (is (str/includes? (:out project) "cave specifier pane")))))
+
+(deftest forge-mission-reads-project-mission-md
+  ;; Given an open forge project with mission.md
+  ;; When GET /api/mission?project=cave
+  ;; Then it prints that mission
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "four-pack" "Hunt the wumpus")
+    (let [result (pack-web root true "--test-mission" (str root) "cave")]
+      (is (zero? (:exit result)))
+      (is (str/includes? (:out result) "Hunt the wumpus")))))
+
+(deftest forge-card-status-is-per-project
+  ;; Given two open projects each with a specifier card and its own pane
+  ;; When --test-state
+  ;; Then each card keeps the status from its own project, not the other
+  (let [root (tmp-dir)
+        cave (fs/path root "projects/cave")
+        dice (fs/path root "projects/dice")]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "four-pack" "m")
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "dice" "four-pack" "m")
+    (setup-pack! cave ["specifier"])
+    (setup-pack! dice ["specifier"])
+    (create-task cave "htw" "specifier")
+    (create-task dice "begin" "specifier")
+    (write-file (fs/path cave ".swarmforge/sessions/specifier/pane.txt")
+                "I'm specifying Hunt the Wumpus.\n")
+    (write-file (fs/path dice ".swarmforge/sessions/specifier/pane.txt")
+                "I'll implement begin.\n")
+    (let [state (json/parse-string
+                 (:out (pack-web root true "--test-state" (str root)))
+                 true)
+          by (into {} (map (juxt :name identity) (:projects state)))
+          cave-status (:status (first (:tasks (get by "cave"))))
+          dice-status (:status (first (:tasks (get by "dice"))))]
+      (is (str/includes? (str cave-status) "Hunt the Wumpus"))
+      (is (str/includes? (str dice-status) "I'll implement begin"))
+      (is (not (str/includes? (str cave-status) "begin")))
+      (is (not (str/includes? (str dice-status) "Hunt the Wumpus"))))))
 
 (deftest forge-state-includes-lieutenant-status-lines
   ;; Given a forge lieutenant pane with two status sentences
