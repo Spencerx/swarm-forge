@@ -376,6 +376,24 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest start-pack-web-drops-stale-dashboard-url
+  ;; Given a leftover dashboard-url and pack_web.pid from a prior run
+  ;; When SwarmForge prepares to start the dashboard
+  ;; Then those stale files are removed so the new port is recorded
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root ".swarmforge/dashboard-url") "http://127.0.0.1:64002\n")
+      (write-file (fs/path root ".swarmforge/pack_web.pid") "99999999\n")
+      (let [out (str/trim (:out (run {:dir root}
+                                     (script "swarmforge.bb")
+                                     "--test-reset-pack-web-state"
+                                     (str root))))]
+        (is (= "false false" out))
+        (is (not (fs/exists? (fs/path root ".swarmforge/dashboard-url"))))
+        (is (not (fs/exists? (fs/path root ".swarmforge/pack_web.pid")))))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest grok-lieutenant-launch-waits-for-chat
   ;; Given a host lieutenant
   ;; When SwarmForge builds the grok launch command

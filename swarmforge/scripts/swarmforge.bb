@@ -724,6 +724,18 @@
 (defn dashboard-url-file [ctx]
   (fs/path (:state-dir ctx) "dashboard-url"))
 
+(defn pack-web-pid-file [ctx]
+  (fs/path (:state-dir ctx) "pack_web.pid"))
+
+(defn stop-existing-pack-web! [ctx]
+  (let [file (pack-web-pid-file ctx)
+        pid (when (fs/regular-file? file)
+              (not-empty (str/trim (slurp (str file)))))]
+    (when pid
+      (process/sh {:continue true} "kill" "-TERM" pid))
+    (fs/delete-if-exists file)
+    (fs/delete-if-exists (dashboard-url-file ctx))))
+
 (defn open-browser? []
   (not= "0" (System/getenv "SWARMFORGE_OPEN_BROWSER")))
 
@@ -732,6 +744,7 @@
     (process/sh {:continue true} "open" url)))
 
 (defn start-pack-web! [ctx]
+  (stop-existing-pack-web! ctx)
   (let [script (str (fs/path (:script-dir ctx) "pack_web.sh"))
         log (fs/path (:state-dir ctx) "dashboard.log")]
     (process/process [script "--serve" (str (:working-dir ctx))]
@@ -1021,6 +1034,13 @@
 (defn test-ensure-codex-trust! [dir]
   (ensure-codex-trust! dir))
 
+(defn test-reset-pack-web-state! [root]
+  (let [ctx (context root)]
+    (fs/create-dirs (:state-dir ctx))
+    (stop-existing-pack-web! ctx)
+    (println (str (boolean (fs/exists? (dashboard-url-file ctx))) " "
+                  (boolean (fs/exists? (pack-web-pid-file ctx)))))))
+
 (defn -main [& args]
   (case (first args)
     "--test-parse" (test-parse! (or (second args) (System/getProperty "user.dir")))
@@ -1037,6 +1057,7 @@
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)
     "--test-ensure-codex-trust" (test-ensure-codex-trust! (second args))
+    "--test-reset-pack-web-state" (test-reset-pack-web-state! (second args))
     "--test-tmux-base-indexes" (test-tmux-base-indexes! (second args))
     "--test-create-role-session" (test-create-role-session! (second args) (nth args 2))
     "--start-project" (run-project! (second args))
