@@ -57,11 +57,13 @@
 (def pane-capture-lines 2000)
 (def pane-heat (atom {}))
 (def pane-status (atom {}))
+(def pane-status-lines (atom {}))
 
 (declare session-name pane-target live-pane-text role-row pane-sample backend-name
          in-process-for-row in-process-task-names approvals
          handoff-files batch-dirs in-process-dir allowed-doc?
-         delete-approval! retry-approval! parse-message pane-status-for role-rows)
+         delete-approval! retry-approval! parse-message pane-status-for role-rows
+         recorded-pane)
 
 (defn usage []
   (binding [*out* *err*]
@@ -266,28 +268,41 @@
         (recur (next lines) current out))
       (cond-> out current (conj current)))))
 
-(defn codex-status [text]
-  (last (remove codex-throwaway-bullet? (codex-bullets text))))
-
-(defn im-status [role text backend]
+(defn matching-status-sentences [text backend]
   (let [tail (last-n-lines (pane-sample text backend) 20)
         joined (str/join "\n" tail)
-        found (if (= "codex" backend)
-                (or (codex-status joined)
-                    (last (filter status-sentence? (pane-sentences joined))))
-                (last (filter status-sentence? (pane-sentences joined))))]
+        from-sentences (filterv status-sentence? (pane-sentences joined))]
+    (if (= "codex" backend)
+      (let [bullets (vec (remove codex-throwaway-bullet? (codex-bullets joined)))]
+        (if (seq bullets) bullets from-sentences))
+      from-sentences)))
+
+(defn im-status-lines [role text backend]
+  (let [found (vec (take-last 2 (matching-status-sentences text backend)))]
     (if (seq found)
-      (do (swap! pane-status assoc role found) found)
-      (get @pane-status role ""))))
+      (do (swap! pane-status-lines assoc role found)
+          (swap! pane-status assoc role (last found))
+          found)
+      (or (not-empty (get @pane-status-lines role))
+          (let [one (get @pane-status role "")]
+            (if (str/blank? one) [] [one]))))))
+
+(defn im-status [role text backend]
+  (or (last (im-status-lines role text backend)) ""))
 
 (defn board-tasks [root]
   (mapv task-entry (lines (pack-board root "list"))))
 
-(defn pane-status-for [root role]
+(defn pane-status-lines-for [root role]
   (let [row (role-row root role)
         text (when row (live-pane-text root role))
         backend (when row (backend-name row))]
-    (im-status role text backend)))
+    (if row
+      (im-status-lines role text backend)
+      [])))
+
+(defn pane-status-for [root role]
+  (or (last (pane-status-lines-for root role)) ""))
 
 (defn active-card-names [root role]
   (let [row (role-row root role)
@@ -779,6 +794,7 @@
                                       (catch Exception _ [])))
                                   open))
      :chat (list-chat root)
+     :lieutenant_status (pane-status-lines-for root "lieutenant")
      :lanes []
      :tasks []
      :work_in_flight (vec (mapcat :work_in_flight
@@ -1390,7 +1406,8 @@
 
 (defn live-pane-text [root role]
   (or *pane-text*
-      (capture-pane root role)))
+      (capture-pane root role)
+      (recorded-pane root role)))
 
 (defn pane-files [root role]
   (let [dir (fs/path root ".swarmforge" "sessions" role)]
@@ -1425,9 +1442,13 @@
       (not-empty (recorded-pane root role))
       (str "(no pane capture for " role ")\n")))
 
-(defn pane-page [role snapshot]
+(defn project-query [project]
+  (when (not-empty project)
+    (str "?project=" (java.net.URLEncoder/encode (str project) "UTF-8"))))
+
+(defn pane-page [role snapshot & [project]]
   (let [role-html (html-escape role)
-        pane-url (str "/api/agents/" role-html "/pane")]
+        pane-url (str "/api/agents/" role-html "/pane" (or (project-query project) ""))]
     (str "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
          "<title>Agent " role-html "</title>"
          "<style>html,body{height:100%;margin:0;overflow:hidden;background:#111;color:#f4f4f4;"
@@ -1476,7 +1497,7 @@
   (if-let [role (agent-role uri)]
     {:status 200
      :headers {"Content-Type" "text/html; charset=utf-8"}
-     :body (pane-page role (pane-content root role))}
+     :body (pane-page role (pane-content root role) (query-value uri "project"))}
     {:status 404 :body "Not found"}))
 
 (defn get-agent-pane [root uri]
@@ -1806,16 +1827,17 @@
                                :uri (str "/api/approvals/" id "/comments")
                                :body (json/generate-string {:path path :comments (or comments "")})})))
 
-(defn test-pane! [root role]
+(defn test-pane! [root role & [project]]
   (when (str/blank? role)
     (exit! 1 "Missing role"))
   (print (:body (handle-request (require-root! root)
                                 {:method "GET"
-                                 :uri (str "/api/agents/" role "/pane")})))
+                                 :uri (str "/api/agents/" role "/pane"
+                                          (or (project-query project) ""))})))
   (flush))
 
-(defn test-agent-page! [role]
-  (print (pane-page (or role "specifier") ""))
+(defn test-agent-page! [role & [project]]
+  (print (pane-page (or role "specifier") "" project))
   (flush))
 
 (defn print-heat-pair! [root before-text after-text]
@@ -1888,6 +1910,7 @@
 (defn test-status-persist! [root first-text second-text]
   (require-root! root)
   (reset! pane-status {})
+  (reset! pane-status-lines {})
   (binding [*pane-text* (or first-text "")]
     (let [first-status (:status (first (:tasks (json/parse-string
                                                 (:body (handle-request root {:method "GET" :uri "/api/state"}))

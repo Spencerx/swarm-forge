@@ -1045,9 +1045,18 @@
   (let [result (pack-web (tmp-dir) false "--test-agent-page" "specifier")]
     (is (zero? (:exit result)))
     (is (str/includes? (:out result) "/api/agents/specifier/pane"))
+    (is (not (str/includes? (:out result) "?project=")))
     (is (str/includes? (:out result) "setInterval(refresh"))
     (is (str/includes? (:out result) "toEndSoon"))
     (is (str/includes? (:out result) "stickBottom"))))
+
+(deftest pack-agent-page-polls-project-pane
+  ;; Given a forge project agent window
+  ;; When serving the agent session page
+  ;; Then it polls /api/agents/<role>/pane?project=<name>
+  (let [result (pack-web (tmp-dir) false "--test-agent-page" "specifier" "HTW")]
+    (is (zero? (:exit result)))
+    (is (str/includes? (:out result) "/api/agents/specifier/pane?project=HTW"))))
 
 (deftest pack-web-test-pane-prints-recorded-pane
   ;; Given a recorded pane.txt for coder task cave-walk
@@ -2436,6 +2445,45 @@
       (is (= "cave" (:project approval)))
       (is (= ["cave"] (:open_projects state)))
       (is (= "cave" (:name (first (:projects state))))))))
+
+(deftest forge-pane-capture-uses-project-root
+  ;; Given a forge with an open project and a recorded specifier pane
+  ;; When GET /api/agents/specifier/pane?project=cave
+  ;; Then it prints that pane, not the host miss
+  (let [root (tmp-dir)
+        dest (fs/path root "projects/cave")]
+    (seed-mini-forge! root)
+    (pack-web-env root {"SWARMFORGE_SKIP_START" "1"}
+                  "--test-new-project" (str root) "cave" "two-pack" "m")
+    (write-file (fs/path dest ".swarmforge/roles.tsv")
+                (format "specifier\tmaster\t%s\tswarmforge-specifier\tSpecifier\tcodex\ttask\n"
+                        dest))
+    (write-file (fs/path dest ".swarmforge/sessions/specifier/pane.txt")
+                "cave specifier pane\n")
+    (let [host (pack-web root true "--test-pane" (str root) "specifier")
+          project (pack-web root true "--test-pane" (str root) "specifier" "cave")]
+      (is (str/includes? (:out host) "(no pane capture for specifier)"))
+      (is (str/includes? (:out project) "cave specifier pane")))))
+
+(deftest forge-state-includes-lieutenant-status-lines
+  ;; Given a forge lieutenant pane with two status sentences
+  ;; When --test-state
+  ;; Then lieutenant_status is those two lines
+  (let [root (tmp-dir)]
+    (seed-mini-forge! root)
+    (fs/create-dirs (fs/path root "projects"))
+    (write-file (fs/path root ".swarmforge/roles.tsv")
+                (format "lieutenant\tmaster\t%s\tswarmforge-lieutenant\tLieutenant\tgrok\ttask\tforward-only\n"
+                        root))
+    (write-file (fs/path root ".swarmforge/sessions/lieutenant/pane.txt")
+                (str "I'm listing the open projects.\n"
+                     "I'll summarize HTW next.\n"))
+    (let [state (json/parse-string
+                 (:out (pack-web root true "--test-state" (str root)))
+                 true)]
+      (is (true? (:forge state)))
+      (is (= ["I'm listing the open projects." "I'll summarize HTW next."]
+             (:lieutenant_status state))))))
 
 (defn -main [& _]
   (let [{:keys [fail error]} (run-tests 'swarmforge.pack-ui-test)]

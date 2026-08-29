@@ -29,6 +29,8 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .attention{display:grid;grid-template-columns:auto 1fr;gap:8px 12px;padding:8px 14px;background:var(--amber-bg);border-bottom:1px solid #efd7a8;font-size:12px;max-height:120px;overflow:auto;position:relative;z-index:30}
 .attention .tag{font-weight:700;text-transform:uppercase;font-size:10px;color:#8a5a0a;padding-top:4px}
 .att-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:rgba(255,255,255,.65);border:1px solid #efd7a8;border-radius:6px;padding:4px 8px;margin:0 0 4px}
+.att-work{text-decoration:underline}
+.att-work .att-project{font-weight:700}
 .menu{position:relative;display:inline-block}
 .menu-list{display:none;position:fixed;z-index:200;min-width:12rem;background:#fff;border:1px solid var(--line);border-radius:6px;box-shadow:0 8px 20px rgba(0,0,0,.12);padding:4px 0}
 .menu.open .menu-list{display:block}
@@ -101,6 +103,7 @@ header.top h1{margin:0;font-size:15px}.meta{color:var(--muted);font-size:12px}.m
 .att-row input[type=text]{flex:1;min-width:8rem;border:1px solid #c6cbc5;border-radius:6px;padding:4px 6px;font:inherit;font-size:11px}
 .bubble-you{border-left:3px solid #6b7c72;padding-left:8px;white-space:pre-wrap}
 .bubble-ts{color:#4a4f4c;padding-left:12px;font-style:italic;white-space:pre-wrap}
+.bubble-status{color:var(--green);padding-left:12px;white-space:pre-wrap}
 .composer{display:flex;gap:6px;margin-top:8px;align-items:flex-end}
 .composer textarea{flex:1;height:calc(1.35em * 4 + 16px);line-height:1.35;border:1px solid #c6cbc5;border-radius:6px;padding:6px 8px;font:inherit;font-size:12px;resize:none}
 .float-layer{position:fixed;inset:0;background:rgba(30,34,31,.28);z-index:100;display:none;align-items:center;justify-content:center}
@@ -797,14 +800,67 @@ function approvalButton(item, action, label, className) {
   return btn;
 }
 
+function attentionWorkPair(project, task) {
+  const wrap = document.createElement("span");
+  wrap.className = "att-work";
+  if (project) {
+    const name = document.createElement("span");
+    name.className = "att-project";
+    name.textContent = project;
+    wrap.appendChild(name);
+  }
+  if (project && task) wrap.appendChild(document.createTextNode("/"));
+  if (task) wrap.appendChild(document.createTextNode(task));
+  return wrap;
+}
+
+function playChime() {
+  window.__swarmChime = (window.__swarmChime || 0) + 1;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.08, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.18);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.2);
+  } catch (_) {}
+}
+
+let attentionSeen = new Set();
+let attentionPrimed = false;
+function chimeNewAttention(data) {
+  const keys = [];
+  (data.approvals || []).forEach((item) => {
+    if (item && item.id) keys.push("a:" + item.id);
+  });
+  (data.clarifications || []).forEach((item) => {
+    if (item && item.id && item.status === "pending") keys.push("c:" + item.id);
+  });
+  let fresh = false;
+  if (attentionPrimed) {
+    keys.forEach((key) => {
+      if (!attentionSeen.has(key)) fresh = true;
+    });
+  }
+  attentionSeen = new Set(keys);
+  attentionPrimed = true;
+  if (fresh) playChime();
+}
+
 function attentionRow(item) {
   const row = document.createElement("div");
   row.className = "att-row";
   const pill = document.createElement("span");
   pill.className = "pill pill-warn";
   pill.textContent = "Approval";
-  const summary = document.createElement("span");
-  summary.textContent = (item.project ? item.project + " · " : "") + item.gate + " · " + item.task;
+  const summary = attentionWorkPair(item.project, item.task);
   row.append(pill, summary);
   if ((item.artifacts || []).length) row.appendChild(artifactMenu(item.artifacts, item));
   const reject = document.createElement("button");
@@ -868,8 +924,8 @@ function clarificationRow(item) {
   row.className = "att-row";
   const pill = document.createElement("span");
   pill.className = "pill pill-warn";
-  pill.textContent = (item.project ? item.project + " · " : "") +
-    "Clarification requested from: " + (item.role || "agent");
+  pill.textContent = "Clarification requested from: " + (item.role || "agent");
+  const pair = attentionWorkPair(item.project, item.task);
   const summary = document.createElement("span");
   summary.textContent = item.body || "";
   const input = document.createElement("input");
@@ -896,7 +952,7 @@ function clarificationRow(item) {
     event.preventDefault();
     postClarification(item.id, input.value);
   });
-  row.append(pill, summary, input, open, send);
+  row.append(pill, pair, summary, input, open, send);
   return row;
 }
 
@@ -934,6 +990,7 @@ function renderClarifications(items) {
 }
 
 function renderAttention(data) {
+  chimeNewAttention(data);
   renderApprovals(data.approvals);
   renderClarifications(data.clarifications);
 }
@@ -1209,13 +1266,27 @@ function bindSplitter() {
   });
 }
 
-let firstPaint = true;
 function chatToEnd() {
   const history = $("chat-history");
   history.scrollTop = history.scrollHeight;
 }
 
-function chatTurn(item) {
+function chatAtBottom(history) {
+  return (history.scrollHeight - history.scrollTop - history.clientHeight) <= 64;
+}
+
+function statusText(lines) {
+  return (lines || []).slice(0, 2).map((line) => "| " + line).join("\n");
+}
+
+function statusBlock(lines) {
+  const el = document.createElement("div");
+  el.className = "bubble-status";
+  el.textContent = statusText(lines);
+  return el;
+}
+
+function chatTurn(item, statusLines) {
   const wrap = document.createElement("div");
   wrap.dataset.chatId = item.id || "";
   const you = document.createElement("div");
@@ -1227,15 +1298,21 @@ function chatTurn(item) {
     reply.className = "bubble-ts";
     reply.textContent = item.response;
     wrap.appendChild(reply);
+  } else if (statusLines && statusLines.length) {
+    wrap.appendChild(statusBlock(statusLines));
   }
   return wrap;
+}
+
+function pendingChatId(items) {
+  const pending = (items || []).filter((item) => item.status === "pending" && !item.response);
+  return pending.length ? pending[pending.length - 1].id : "";
 }
 
 function renderChat(data) {
   const history = $("chat-history");
   const items = data.chat || [];
-  const nearEnd = firstPaint
-    || (history.scrollHeight - history.scrollTop - history.clientHeight) <= 64;
+  const pinBottom = chatAtBottom(history);
   const live = {};
   items.forEach((item) => {
     live[item.id] = true;
@@ -1243,13 +1320,17 @@ function renderChat(data) {
   [...history.querySelectorAll("[data-chat-id]")].forEach((el) => {
     if (!live[el.dataset.chatId]) el.remove();
   });
+  const latestPending = pendingChatId(items);
+  const statusLines = data.lieutenant_status || [];
   items.forEach((item) => {
+    const showStatus = item.id === latestPending && !item.response;
     let wrap = history.querySelector("[data-chat-id=\"" + item.id + "\"]");
     if (!wrap) {
-      history.appendChild(chatTurn(item));
+      history.appendChild(chatTurn(item, showStatus ? statusLines : []));
       return;
     }
     const reply = wrap.querySelector(".bubble-ts");
+    const statusEl = wrap.querySelector(".bubble-status");
     if (item.response && !reply) {
       const next = document.createElement("div");
       next.className = "bubble-ts";
@@ -1258,12 +1339,23 @@ function renderChat(data) {
     } else if (item.response && reply && reply.textContent !== item.response) {
       reply.textContent = item.response;
     }
+    if (item.response || !showStatus) {
+      if (statusEl) statusEl.remove();
+    } else {
+      const text = statusText(statusLines);
+      if (!text) {
+        if (statusEl) statusEl.remove();
+      } else if (statusEl) {
+        if (statusEl.textContent !== text) statusEl.textContent = text;
+      } else {
+        wrap.appendChild(statusBlock(statusLines));
+      }
+    }
   });
-  if (nearEnd) {
+  if (pinBottom) {
     chatToEnd();
     requestAnimationFrame(chatToEnd);
   }
-  firstPaint = false;
 }
 
 async function sendChat() {
@@ -1343,7 +1435,8 @@ document.addEventListener("click", (event) => {
   const project = btn.getAttribute("data-open-project");
   if (role) {
     const qs = project ? "?project=" + encodeURIComponent(project) : "";
-    openAgentWindow("/agent/" + encodeURIComponent(role) + qs, "agent-" + role);
+    openAgentWindow("/agent/" + encodeURIComponent(role) + qs,
+                    "agent-" + (project ? project + "-" : "") + role);
   }
 });
 loadState();

@@ -144,6 +144,7 @@
 
 (def receive-modes #{"task" "batch"})
 (def propagation-modes #{"forward-only" "back-one" "back-all"})
+(def known-agents #{"claude" "codex" "copilot" "grok"})
 
 (defn receive-fields [trailing]
   (let [[receive-mode after-receive]
@@ -172,7 +173,7 @@
              (str "Duplicate worktree '" worktree "' in " (:config-file ctx)))
   (reject-if (or (str/includes? worktree "/") (#{"." ".."} worktree))
              (str "Invalid worktree '" worktree "' for role '" role "'"))
-  (reject-if (not (#{"claude" "codex" "copilot" "grok"} agent))
+  (reject-if (not (known-agents agent))
              (str "Unsupported agent '" agent "' for role '" role "'"))
   (reject-if (not (#{"task" "batch"} receive-mode))
              (str "Invalid receive mode '" receive-mode "' for role '" role "' on line " line-no ": expected task or batch"))
@@ -446,12 +447,16 @@
   (and (not= role "lieutenant")
        (= role (:role (last (:roles ctx))))))
 
-(defn write-agent-instruction-file! [role prompt-file last-role?]
-  (spit (str prompt-file)
-        (str "Read swarmforge/constitution.prompt, then read every file it refers to recursively, and obey all of those instructions.\n"
-             "Read swarmforge/roles/" role ".prompt, then read every file it refers to recursively, and follow all of those instructions.\n"
-             "\n"
-             (tool-startup-section role last-role?))))
+(defn write-agent-instruction-file! [ctx role prompt-file last-role?]
+  (if (= role "lieutenant")
+    (fs/copy (fs/path (:roles-dir ctx) "lieutenant.prompt")
+             prompt-file
+             {:replace-existing true})
+    (spit (str prompt-file)
+          (str "Read swarmforge/constitution.prompt, then read every file it refers to recursively, and obey all of those instructions.\n"
+               "Read swarmforge/roles/" role ".prompt, then read every file it refers to recursively, and follow all of those instructions.\n"
+               "\n"
+               (tool-startup-section role last-role?)))))
 
 (defn extra-args-prefix [row]
   (let [args (:extra-args row)]
@@ -492,17 +497,33 @@
                           (fs/path role-worktree "swarmforge" "scripts"))
         prompt-file (fs/path (:prompts-dir ctx) (str role ".md"))
         tool-bin (fs/path (:working-dir ctx) ".swarmforge" "bin")
+        prompt (str "\"$(cat " (sq (str prompt-file)) ")\"")
+        initial-prompt? (not= role "lieutenant")
         base (str "export SWARMFORGE_ROLE=" (sq role)
                   " && export PATH=" (sq (str tool-bin)) ":" (sq (str role-script-dir)) ":$PATH"
                   " && cd " (sq (str role-worktree))
                   " && ")]
-    (write-agent-instruction-file! role prompt-file (last-pack-role? ctx role))
+    (write-agent-instruction-file! ctx role prompt-file (last-pack-role? ctx role))
     (cond-> (str base
                 (case agent
-                  "claude" (str (alt-screen-env agent row) "claude --append-system-prompt-file " (sq (str prompt-file)) " " (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " " (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "codex" (str "codex -C " (sq (str role-worktree)) " " (no-alt-screen-flag agent row) (yolo-flag agent row) (extra-args-prefix row) "\"$(cat " (sq (str prompt-file)) ")\"")
-                  "copilot" (str "copilot -C " (sq (str role-worktree)) " " (no-alt-screen-flag agent row) "--name " (sq (str "SwarmForge " display)) " " (yolo-flag agent row) (extra-args-prefix row) "-i \"$(cat " (sq (str prompt-file)) ")\"")
-                  "grok" (str "grok --cwd " (sq (str role-worktree)) " " (grok-permission-prefix row) (extra-args-prefix row) "--minimal --rules \"$(cat " (sq (str prompt-file)) ")\" --verbatim \"$(cat " (sq (str prompt-file)) ")\"")))
+                  "claude" (str (alt-screen-env agent row)
+                                "claude --append-system-prompt-file " (sq (str prompt-file)) " "
+                                (yolo-flag agent row) "-n " (sq (str "SwarmForge " display)) " "
+                                (extra-args-prefix row)
+                                (when initial-prompt? prompt))
+                  "codex" (str "codex -C " (sq (str role-worktree)) " "
+                               (no-alt-screen-flag agent row) (yolo-flag agent row)
+                               (extra-args-prefix row)
+                               (when initial-prompt? prompt))
+                  "copilot" (str "copilot -C " (sq (str role-worktree)) " "
+                                 (no-alt-screen-flag agent row)
+                                 "--name " (sq (str "SwarmForge " display)) " "
+                                 (yolo-flag agent row) (extra-args-prefix row)
+                                 (when initial-prompt? (str "-i " prompt)))
+                  "grok" (str "grok --cwd " (sq (str role-worktree)) " "
+                              (grok-permission-prefix row) (extra-args-prefix row)
+                              "--minimal --rules " prompt
+                              (when initial-prompt? (str " --verbatim " prompt)))))
       (= index 0)
       (str "; exit_code=$?; SWARMFORGE_TERMINAL_BACKEND=" (sq (:terminal-backend ctx))
            " nohup " (sq (str (fs/path (:script-dir ctx) "swarm-cleanup.sh")))
@@ -850,9 +871,29 @@
         (announce-ready! ctx)
         (open-terminal-surfaces! ctx)))))
 
+(defn parse-lieutenant-config [ctx]
+  (let [file (:config-file ctx)
+        fallback (str/lower-case (or (not-empty (System/getenv "SWARMFORGE_LIEUTENANT_AGENT")) "grok"))]
+    (if-not (fs/regular-file? file)
+      {:agent fallback :extra-args nil}
+      (or (some (fn [raw]
+                  (let [line (str/trim raw)]
+                    (when-not (skip-config-line? line)
+                      (let [fields (str/split line #"\s+")]
+                        (when (and (>= (count fields) 2)
+                                   (= (str/lower-case (first fields)) "lieutenant"))
+                          (let [agent (str/lower-case (second fields))]
+                            (reject-if (not (known-agents agent))
+                                       (str "Unsupported agent '" (second fields)
+                                            "' for lieutenant"))
+                            {:agent agent
+                             :extra-args (extra-args-str (drop 2 fields))}))))))
+                (str/split-lines (slurp (str file))))
+          {:agent fallback :extra-args nil}))))
+
 (defn lieutenant-row [ctx]
-  (let [agent (str/lower-case (or (not-empty (System/getenv "SWARMFORGE_LIEUTENANT_AGENT")) "grok"))]
-    (window-row ctx "lieutenant" agent "master" "task" "forward-only" nil false)))
+  (let [{:keys [agent extra-args]} (parse-lieutenant-config ctx)]
+    (window-row ctx "lieutenant" agent "master" "task" "forward-only" extra-args false)))
 
 (defn forge-root? [root]
   (fs/directory? (fs/path root "packs")))
@@ -960,6 +1001,15 @@
     (fs/create-dirs (:prompts-dir ctx))
     (println (launch-command ctx 1 row))))
 
+(defn test-lieutenant-launch-command! [root]
+  (let [ctx (assoc (context root) :terminal-backend "none")
+        row (assoc (lieutenant-row ctx) :worktree-path (fs/path root))]
+    (fs/create-dirs (:prompts-dir ctx))
+    (fs/create-dirs (:roles-dir ctx))
+    (when-not (fs/exists? (fs/path (:roles-dir ctx) "lieutenant.prompt"))
+      (spit (str (fs/path (:roles-dir ctx) "lieutenant.prompt")) "lieutenant\n"))
+    (println (launch-command ctx 1 row))))
+
 (defn test-install-hooks! [root]
   (let [ctx (context root)]
     (install-commit-msg-hook! ctx)
@@ -981,6 +1031,8 @@
     "--test-launch-command" (apply test-launch-command!
                                      (or (second args) (System/getProperty "user.dir"))
                                      (drop 2 args))
+    "--test-lieutenant-launch-command" (test-lieutenant-launch-command!
+                                        (or (second args) (System/getProperty "user.dir")))
     "--test-install-hooks" (test-install-hooks! (second args))
     "--test-agent-start-delay" (println (env-long "SWARMFORGE_AGENT_START_DELAY_MS" 1500))
     "--test-sleep-inhibitor-prefix" (test-sleep-inhibitor-prefix!)

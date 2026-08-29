@@ -376,6 +376,41 @@
       (finally
         (fs/delete-tree root)))))
 
+(deftest grok-lieutenant-launch-waits-for-chat
+  ;; Given a host lieutenant
+  ;; When SwarmForge builds the grok launch command
+  ;; Then grok loads rules and stays idle — no initial --verbatim prompt
+  (let [root (tmp-dir)]
+    (try
+      (let [command (:out (run {:dir root}
+                               (script "swarmforge.bb")
+                               "--test-lieutenant-launch-command"
+                               (str root)))]
+        (is (str/includes? command "grok --cwd "))
+        (is (str/includes? command "--minimal --rules \"$(cat "))
+        (is (str/includes? command ".swarmforge/prompts/lieutenant.md"))
+        (is (not (str/includes? command "--verbatim")))
+        (is (fs/exists? (fs/path root ".swarmforge/prompts/lieutenant.md"))))
+      (finally
+        (fs/delete-tree root)))))
+
+(deftest lieutenant-launch-reads-host-conf
+  ;; Given a host conf line Lieutenant claude --yolo
+  ;; When SwarmForge builds the lieutenant launch command
+  ;; Then the command uses claude with --yolo
+  (let [root (tmp-dir)]
+    (try
+      (write-file (fs/path root "swarmforge/swarmforge.conf") "Lieutenant claude --yolo\n")
+      (let [command (:out (run {:dir root}
+                               (script "swarmforge.bb")
+                               "--test-lieutenant-launch-command"
+                               (str root)))]
+        (is (str/includes? command "claude --append-system-prompt-file "))
+        (is (str/includes? command "--yolo"))
+        (is (not (str/includes? command "grok --cwd "))))
+      (finally
+        (fs/delete-tree root)))))
+
 (deftest grok-launch-command-uses-minimal-for-scrollback
   ;; Given a grok pack role
   ;; When SwarmForge builds the launch command
@@ -1036,6 +1071,7 @@
       (write-file (fs/path base "swarm") "#!/bin/sh\necho swarm\n")
       (write-file (fs/path base "swarmforge/constitution.prompt") "MAIN-CONSTITUTION\n")
       (write-file (fs/path base "swarmforge/roles/lieutenant.prompt") "LIEUTENANT\n")
+      (write-file (fs/path base "swarmforge/swarmforge.conf") "# Lieutenant grok\n")
       (write-file (fs/path base "swarmforge/constitution/articles/engineering.prompt") "MAIN-ENGINEERING\n")
       (write-file (fs/path base "swarmforge/constitution/articles/workflow.prompt") "MAIN-WORKFLOW\n")
       (write-file (fs/path base "swarmforge/constitution/articles/handoffs.prompt") "MAIN-HANDOFFS\n")
@@ -1064,6 +1100,7 @@
         (is (= "MAIN-HANDOFFS\n" (slurp (str (fs/path host "swarmforge/constitution/articles/handoffs.prompt")))))
         (is (= "MAIN-CONSTITUTION\n" (slurp (str (fs/path host "swarmforge/constitution.prompt")))))
         (is (fs/exists? (fs/path host "swarmforge/roles/lieutenant.prompt")))
+        (is (fs/exists? (fs/path host "swarmforge/swarmforge.conf")))
         (is (not (fs/exists? (fs/path host "swarmforge/roles/specifier.prompt"))))
         (is (not (fs/exists? (fs/path host "swarmforge/constitution/articles/project.prompt"))))
         (is (= "PACK-PROJECT\n" (slurp (str (fs/path host "packs/two-pack/swarmforge/constitution/articles/project.prompt")))))

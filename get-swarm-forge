@@ -85,6 +85,9 @@ done
 mkdir -p swarmforge/roles
 [[ -f "$base_dir/swarmforge/roles/lieutenant.prompt" ]] \
   && cp "$base_dir/swarmforge/roles/lieutenant.prompt" swarmforge/roles/lieutenant.prompt
+if [[ ! -f swarmforge/swarmforge.conf && -f "$base_dir/swarmforge/swarmforge.conf" ]]; then
+  cp "$base_dir/swarmforge/swarmforge.conf" swarmforge/swarmforge.conf
+fi
 if [[ -f "$base_dir/swarm" ]]; then
   cp "$base_dir/swarm" swarm
 elif [[ ! -f swarm ]]; then

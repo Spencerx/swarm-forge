@@ -260,6 +260,44 @@ test.describe("pack dashboard", () => {
     }
   });
 
+  test("Attention shows underlined project/task with a bold project", async ({ page }) => {
+    await page.goto(handle.url);
+    const pair = page.locator("#attention-approvals .att-work");
+    await expect(pair).toContainText("htw/HTW");
+    await expect(page.locator("#attention-approvals .att-project")).toHaveCSS("font-weight", "700");
+    await expect(pair).toHaveCSS("text-decoration-line", "underline");
+    await expect(page.locator("#attention-clarifications .att-project")).toHaveText("htw");
+  });
+
+  test("chimes once when a new Attention row appears", async ({ page }) => {
+    await page.goto(handle.url);
+    await expect(page.locator("#attention-approvals .att-row")).toHaveCount(1);
+    const before = await page.evaluate(() => window.__swarmChime || 0);
+    writeFile(
+      path.join(handle.root, "projects/htw/.swarmforge/handoffs/pending_approval/50_second.handoff"),
+      "from: specifier\n" +
+        "to: coder\n" +
+        "type: git_handoff\n" +
+        "task_id: 20260101T000001Z-htw\n" +
+        "task: HTW\n" +
+        "artifacts: features/console.feature\n" +
+        "\n" +
+        "payload\n"
+    );
+    const second = path.join(
+      handle.root,
+      "projects/htw/.swarmforge/handoffs/pending_approval/50_second.handoff"
+    );
+    try {
+      await expect.poll(() => page.evaluate(() => window.__swarmChime || 0), { timeout: 5000 })
+        .toBe(before + 1);
+      await page.waitForTimeout(2500);
+      expect(await page.evaluate(() => window.__swarmChime || 0)).toBe(before + 1);
+    } finally {
+      fs.rmSync(second, { force: true });
+    }
+  });
+
   test("Clarification Open posts the answer", async ({ page, context }) => {
     const local = await startDashboard();
     try {
@@ -272,6 +310,56 @@ test.describe("pack dashboard", () => {
       await clar.locator("#clar-response").fill("Yes, any of the 20 rooms.");
       await clar.locator("#clar-ok").click();
       await expect(page.locator("#attention-clarifications .att-row")).toHaveCount(0);
+    } finally {
+      await stopDashboard(local);
+    }
+  });
+
+  test("pending lieutenant chat shows green status under the request", async ({ page }) => {
+    const local = await startDashboard();
+    try {
+      writeFile(
+        path.join(local.root, ".swarmforge/dashboard/requests/pending/req-1.request"),
+        "id: req-1\nstatus: pending\ncreated_at: 2026-01-01T00:00:00Z\n\nhi\n"
+      );
+      writeFile(
+        path.join(local.root, ".swarmforge/sessions/lieutenant/pane.txt"),
+        "I'm listing the open projects.\nI'll summarize HTW next.\n"
+      );
+      await page.goto(local.url);
+      const status = page.locator("#chat-history [data-chat-id=\"req-1\"] .bubble-status");
+      await expect(status).toContainText("| I'm listing the open projects.");
+      await expect(status).toContainText("| I'll summarize HTW next.");
+      await expect(status).toHaveCSS("color", "rgb(47, 107, 58)");
+    } finally {
+      await stopDashboard(local);
+    }
+  });
+
+  test("chat stays put unless already at the bottom", async ({ page }) => {
+    const local = await startDashboard();
+    try {
+      for (let i = 0; i < 12; i++) {
+        writeFile(
+          path.join(local.root, ".swarmforge/dashboard/requests/done/req-" + i + ".request"),
+          "id: req-" + i + "\nstatus: done\ncreated_at: 2026-01-01T00:00:00Z\nresponse: reply " + i + "\\nmore\\n\n\nrequest " + i + " " + "word ".repeat(20) + "\n"
+        );
+      }
+      await page.goto(local.url);
+      const history = page.locator("#chat-history");
+      await expect(history.locator("[data-chat-id]")).toHaveCount(12);
+      await history.evaluate((el) => { el.scrollTop = 0; });
+      const top = await history.evaluate((el) => el.scrollTop);
+      await page.waitForTimeout(2500);
+      expect(await history.evaluate((el) => el.scrollTop)).toBe(top);
+      await history.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+      writeFile(
+        path.join(local.root, ".swarmforge/dashboard/requests/done/req-bottom.request"),
+        "id: req-bottom\nstatus: done\ncreated_at: 2026-01-01T00:01:00Z\nresponse: last\\n\n\nnew bottom\n"
+      );
+      await expect(history.locator("[data-chat-id=\"req-bottom\"]")).toBeVisible({ timeout: 5000 });
+      const gap = await history.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight);
+      expect(gap).toBeLessThanOrEqual(64);
     } finally {
       await stopDashboard(local);
     }

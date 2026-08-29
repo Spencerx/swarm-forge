@@ -113,9 +113,11 @@ available.
 
 Create a project from the dashboard with **New Project** (name, mission,
 pack, optional GitHub `owner/repo`, editable conf). That writes
-`projects/<name>/` including `mission.md` and starts that pack. **Open
-Project** starts an existing directory under `projects/`. **Close** on a
-project header stops that pack and leaves the directory.
+`projects/<name>/` including `mission.md`, gives that directory its own
+git repo (or uses the clone), and starts that pack. The pack's `master`
+role works in that repo. **Open Project** starts an existing directory
+under `projects/`. **Close** on a project header stops that pack and
+leaves the directory.
 
 Set `SWARMFORGE_OPEN_BROWSER=0` before `./swarm` to skip the browser open. The dashboard still starts; visit the printed URL.
 
@@ -136,10 +138,10 @@ a project agent.
 Layout, top to bottom then left to right:
 
 - **Header** — SwarmForge, live marker, **New Project**, **Open Project**, **Teardown**.
-- **Attention** — human gates from every open project. Each row names the **project** and the task.
+- **Attention** — human gates from every open project. Each row names the work as underlined **`project`/`task`** (project bold).
 - **Board** — one band per open project, split by a horizontal bar. Each band has a header (**New Task**, **Close**) and that pack's swimlanes plus **Done**.
 - **Work Queue** — the same project stack on the right; the two sides scroll independently.
-- **Chat** — follow-ups to the lieutenant.
+- **Chat** — follow-ups to the lieutenant. Pending replies show live green `|` status under the request.
 
 ### Operating the dashboard
 
@@ -157,9 +159,14 @@ in the project's master lane and queues a `(New Task)` note to that agent.
 
 **Talk to the lieutenant.** Type in the chat composer (Enter sends,
 Shift+Enter newline). The dashboard stores a durable request and injects
-`[id] text` into the lieutenant pane.
+`[id] text` into the lieutenant pane. While the reply is pending, up to
+two green `|` status lines appear under the request (same filtering as
+card status) and replace each other as the lieutenant thinks. The chat
+rail stays put unless the scroller is already at the bottom; then new
+lines stay pinned to the bottom. The lieutenant is grok unless host
+`swarmforge/swarmforge.conf` has a line like `Lieutenant grok --yolo`.
 
-**Approve a specifier handoff.** When the specifier queues work for the next role, Attention shows **Approval** with the task, a **Documents** menu for artifacts, **Approve**, and **Reject**. Approve delivers the handoff and moves the card. Reject leaves the card with the specifier and notifies that agent. Two-pack has no specifier gate; those handoffs deliver immediately.
+**Approve a specifier handoff.** When the specifier queues work for the next role, Attention shows **Approval**, the underlined **`project`/`task`** pair, a **Documents** menu for artifacts, **Approve**, and **Reject**. A new Attention row plays a short chime. Approve delivers the handoff and moves the card. Reject leaves the card with the specifier and notifies that agent. Two-pack has no specifier gate; those handoffs deliver immediately.
 
 **Answer a clarification.** If an agent needs a human answer, Attention shows **Request clarification**, the question, and a text box. Submit injects the answer into that agent's pane. Do not use Approve/Reject for this.
 
@@ -311,11 +318,21 @@ The optional propagation token defaults to `forward-only`. The card still follow
 
 Those extra copies do not move the card. The recipient merges the copy and keeps working; it does not hand that copy onward. The card goes Done only when the last window sends a `git_handoff`.
 
+The **host** conf may include a lieutenant line instead of windows:
+
+```conf
+Lieutenant grok --yolo
+```
+
+If that line is omitted, the lieutenant is grok with no extra args.
+
 Pack defaults (roles not listed here are `forward-only`):
 
-- `two-pack`: cleaner `batch back-one`
-- `four-pack`: refactorer `back-one`, architect `batch back-all`
-- `six-pack`: cleaner `batch back-one`, architect `batch back-all`, QA `batch back-all`
+- `two-pack`: coder grok, cleaner codex `batch back-one`
+- `four-pack`: specifier codex, coder grok, refactorer grok, architect
+  codex `batch back-all`; refactorer `back-one`
+- `six-pack`: specifier codex, coder grok, cleaner grok `batch back-one`,
+  architect grok `batch back-all`, hardender codex, QA grok `batch back-all`
 
 Any fields after receive-mode and the propagation token are passed directly to the agent CLI as additional arguments. If you omit those tokens, extra arguments may start at the fifth field:
 
@@ -337,10 +354,10 @@ This lets each project choose its own swarm shape instead of being locked to a f
 Example config (four-pack shape, pack default is invisible):
 
 ```conf
-window-invisible specifier grok master
-window-invisible coder codex coder --yolo
-window-invisible refactorer codex refactorer back-one --yolo
-window-invisible architect grok architect batch back-all
+window-invisible specifier codex master --yolo
+window-invisible coder grok coder
+window-invisible refactorer grok refactorer back-one
+window-invisible architect codex architect batch back-all --yolo
 ```
 
 In the example above, the agents run in these worktrees:
