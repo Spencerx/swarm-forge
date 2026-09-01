@@ -82,7 +82,8 @@ SwarmForge runs locally. Before starting a runnable branch, make sure the target
 
 ## Getting Started
 
-Install the `get-swarm-forge` helper somewhere on your `PATH`, such as `~/cmds` or `~/bin`:
+This branch is not a forge. Install the helper on your `PATH`, then run it in
+the directory you want to use:
 
 ```sh
 mkdir -p ~/cmds
@@ -90,45 +91,15 @@ cp get-swarm-forge ~/cmds/get-swarm-forge
 chmod +x ~/cmds/get-swarm-forge
 ```
 
-Make sure that utility directory is on your shell `PATH`, then run the helper in
-the directory that will be the **forge** (not a single project):
-
 ```sh
-get-swarm-forge project-manager
+get-swarm-forge project-manager   # multi-pack forge
+get-swarm-forge lieutenant        # single-pipeline forge
+get-swarm-forge six-pack          # pack-only (or two-pack / four-pack)
 ```
 
-`get-swarm-forge project-manager` installs the multi-pack host, `packs/two-pack`,
-`packs/four-pack`, `packs/six-pack`, and an empty `projects/` directory. For a
-pack-only checkout use `get-swarm-forge six-pack` (or `two-pack` / `four-pack`).
-For the lieutenant host use `get-swarm-forge lieutenant`.
-
-Start the host dashboard:
-
-```sh
-./swarm
-```
-
-`./swarm` starts the dashboard and the **lieutenant** only. It does not start
-project agents. Startup prints a **Dashboard:** URL (also written to
-`.swarmforge/dashboard-url`) and opens it in the browser when `open` is
-available.
-
-Create a project from the dashboard with **New Project** (name, mission,
-pack, optional GitHub `owner/repo`, editable conf). That writes
-`projects/<name>/` including `mission.md`, gives that directory its own
-git repo (or uses the clone), and starts that pack. The pack's `master`
-role works in that repo. **Open Project** starts an existing directory
-under `projects/`. **Close** on a project header stops that pack and
-leaves the directory.
-
-Set `SWARMFORGE_OPEN_BROWSER=0` before `./swarm` to skip the browser open. The dashboard still starts; visit the printed URL.
-
-To stop everything, click **Teardown** in the dashboard header and confirm.
-That closes every open project, then kills the lieutenant, tmux, and the
-dashboard. Directories under `projects/` stay on disk. After a later
-`./swarm`, nothing is running until you Open Project.
-
-While a swarm is active, SwarmForge tries to prevent the host from sleeping. On macOS it uses `caffeinate`; on Linux it uses `systemd-inhibit` when available. Display lock or manual sleep can still interrupt agents depending on the OS. Set `SWARMFORGE_PREVENT_SLEEP=0` before `./swarm` to disable this behavior.
+Forge getting-started (dashboard, New Project, Teardown) lives on
+`project-manager` and `lieutenant`. Pack-only getting-started lives on the
+pack branches. `./swarm` on `main` is not the product.
 
 ## Pack Cockpit
 
