@@ -85,6 +85,61 @@ lieutenant, and dashboard. `project-manager` also downloads the three pack
 branches into `packs/`; `lieutenant` carries its one template under
 `.swarmforge/project-pack/`.
 
+## Configuration contract
+
+Every running project has a `swarmforge/swarmforge.conf`. For the fixed packs,
+each non-comment line has this shape:
+
+```text
+window[-invisible] <role> <backend> <worktree> [task|batch] [forward-only|back-one|back-all] [backend arguments...]
+```
+
+- File order is the default forward pipeline. Exactly one role must use the
+  `master` worktree; that sentinel means the project's main checkout on its
+  current branch. Other names become `.worktrees/<name>` checkouts.
+- `window` opens a terminal surface; `window-invisible` runs only in tmux and
+  is opened from the dashboard when needed.
+- Receive mode defaults to `task`. `batch` lets a role accept a compatible
+  group of queued handoffs together.
+- Propagation defaults to `forward-only`. `back-one` and `back-all` arrange
+  merge-only copies for earlier roles after downstream work.
+- Supported backends are `codex`, `grok`, `claude`, and `copilot`; remaining
+  tokens are passed to that backend.
+
+Forge hosts instead use `Lieutenant <backend> [backend arguments...]`.
+Branches may extend the grammar for their own control plane—for example,
+`lieutenant` adds typed `card` routes and the squad branches add
+`swarmforge/squad.conf`. The selected branch README and its parser are the
+authority for those extensions.
+
+## Constitution and role prompts
+
+The installer composes instructions as data; it does not bake every product's
+rules into the launcher. A normal pack agent is started with instructions to
+read `swarmforge/constitution.prompt`, recursively read what it names, and then
+read `swarmforge/roles/<role>.prompt`.
+
+The three article names owned by `main` are:
+
+| Article | Shared responsibility |
+|---|---|
+| [`engineering.prompt`](swarmforge/constitution/articles/engineering.prompt) | Language defaults, testability, acceptance-pipeline tooling, verification, and quality-tool guardrails. |
+| [`workflow.prompt`](swarmforge/constitution/articles/workflow.prompt) | Worktree discipline, commit attribution, temporary files, and failure conditions. |
+| [`handoffs.prompt`](swarmforge/constitution/articles/handoffs.prompt) | The structured send, receive, merge, retry, and completion protocol. |
+
+A product branch contributes its constitution entry point and any differently
+named local articles, such as `project.prompt`, `local-engineering.prompt`, or
+`local-workflow.prompt`. The composer reserves the three shared names above for
+`main`, so a pack cannot silently replace common law. The product's README
+describes what its local articles add without repeating these shared rules.
+
+Role prompts divide ownership inside that law: what a role may change, what it
+must verify, what it must leave to another role, and where its next handoff
+goes. There must be a matching prompt for every configured role. A forge
+lieutenant is the exception: the shared
+[`lieutenant.prompt`](swarmforge/roles/lieutenant.prompt) explicitly keeps it
+outside the project engineering constitution.
+
 ## Use a product
 
 Install a pack in an existing software repository:
@@ -124,7 +179,18 @@ from `main` when those files change.
 Do not pin prompt prose with automated tests. Test observable runtime behavior
 instead.
 
-## Runtime model
+## Runtime components and generated state
+
+The shared runtime is divided by responsibility:
+
+| Component | Responsibility |
+|---|---|
+| `swarmforge.sh` / `swarmforge.bb` | Parse configuration, create worktrees and tmux sessions, synchronize managed files, and launch agents. |
+| `swarm_handoff.*`, `ready_for_next.*`, `done_with_current.*` | Create, accept, merge, audit, and complete durable work items. |
+| `handoffd.*` | Deliver queued handoffs and notify receiving sessions. |
+| `pack_board.*`, `pack_web.*`, `pack/dashboard.html` | Persist and present cards, approvals, clarifications, agent panes, and controls. |
+| `forge.*` | Create, open, refresh, and stop projects inside a forge product. |
+| Terminal adapters, watchdog, and cleanup scripts | Expose panes, monitor sessions, and shut the swarm down cleanly. |
 
 At startup the composed runtime validates the configuration, initializes git
 when necessary, creates role worktrees, mirrors the managed SwarmForge files
@@ -134,7 +200,11 @@ dashboard, and launches each configured agent backend.
 `master` in a role configuration means the project's main checkout on its
 current branch; it is a worktree sentinel, not a required git branch name.
 Generated transport and process state lives under `.swarmforge/`; generated
-role checkouts live under `.worktrees/`.
+role checkouts live under `.worktrees/`. `.swarmforge/` contains such runtime
+records as role/session maps, the tmux socket, handoff inboxes and outboxes,
+board data, approvals, clarifications, daemon state, and dashboard state. It is
+not product source and agents must not edit it as a substitute for the helper
+commands.
 
 Agents send committed work with `swarm_handoff.sh`, accept it with
 `ready_for_next.sh`, and finish the current item with `done_with_current.sh`.
