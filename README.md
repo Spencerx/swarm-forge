@@ -4,41 +4,49 @@ Do not spend any money on a bankrbot SWARM token.
 
 # SwarmForge
 
-**A disciplined tmux-based agent orchestration platform that turns swarms of AI agents into reliable, professional software engineers.**
+SwarmForge coordinates AI agents in isolated git worktrees and tmux sessions.
+Agents exchange committed work through durable handoffs, while the operator
+uses a local dashboard to start work, inspect agents, handle approval gates,
+answer clarifications, and stop the swarm.
 
-SwarmForge coordinates several AI agents on one project (or several projects)
-without them stepping on each other. Each role has its own git worktree, tmux
-session, prompt, and handoff mail. Humans use a local dashboard for the board,
-Attention, and chat.
+![SwarmForge dashboard](project-swarm.jpg)
 
-This **`main`** branch is the GitHub landing page and the source of shared
-scripts and constitution articles. It is not a product you run. Pick a product
-with `get-swarm-forge`, then read that branch's README for details.
+This repository's master branch is named `main`. It is the landing page,
+installer source, shared runtime, and shared engineering law. It is not itself
+a runnable SwarmForge product.
 
 ## Products
 
-| Command | Branch | What you get |
+| Command | Branch | Shape |
 |---|---|---|
-| `get-swarm-forge two-pack` | [`two-pack`](https://github.com/unclebob/swarm-forge/blob/two-pack/README.md) | Pack in the current directory. `coder` → `cleaner` → Done. Fast backend work, no Gherkin. |
-| `get-swarm-forge four-pack` | [`four-pack`](https://github.com/unclebob/swarm-forge/blob/four-pack/README.md) | Pack in `.`. `specifier` → `coder` → `refactorer` → `architect`. Gherkin without a full six-role split. |
-| `get-swarm-forge six-pack` | [`six-pack`](https://github.com/unclebob/swarm-forge/blob/six-pack/README.md) | Pack in `.`. `specifier` → `coder` → `cleaner` → `architect` → `hardender` → `QA`. Full specification, mutation, headed QA. |
-| `get-swarm-forge project-manager` | [`project-manager`](https://github.com/unclebob/swarm-forge/blob/project-manager/README.md) | Multi-pack **forge**. Dashboard, host lieutenant (concierge), New Project pack radios, several projects at once. |
-| `get-swarm-forge lieutenant` | [`lieutenant`](https://github.com/unclebob/swarm-forge/blob/lieutenant/README.md) | Single-pipeline **forge**. One template, card types (utility / component / QA / review), host lieutenant as planner. |
+| `get-swarm-forge two-pack` | [`two-pack`](https://github.com/unclebob/swarm-forge/blob/two-pack/README.md) | Pack installed into the current project: `coder` → `cleaner`. |
+| `get-swarm-forge four-pack` | [`four-pack`](https://github.com/unclebob/swarm-forge/blob/four-pack/README.md) | Pack installed into the current project: `specifier` → `coder` → `refactorer` → `architect`. |
+| `get-swarm-forge six-pack` | [`six-pack`](https://github.com/unclebob/swarm-forge/blob/six-pack/README.md) | Pack installed into the current project: six separate specification, implementation, cleanup, architecture, hardening, and QA roles. |
+| `get-swarm-forge project-manager` | [`project-manager`](https://github.com/unclebob/swarm-forge/blob/project-manager/README.md) | Multi-project forge with selectable two-, four-, and six-pack templates and a host lieutenant. |
+| `get-swarm-forge lieutenant` | [`lieutenant`](https://github.com/unclebob/swarm-forge/blob/lieutenant/README.md) | Multi-project forge with one configurable project template and a planning lieutenant. |
 
-**Packs** compose into the directory you are in. `./swarm` starts that pack's
-agents. There is no `projects/` tree and no host lieutenant.
+A **pack** is composed into an existing project. Running `./swarm` starts that
+project's configured roles.
 
-**Forges** install a host. `./swarm` starts the dashboard and a host lieutenant
-only. New Project writes `projects/<name>/`. Details: dashboard, Attention,
-chat, Teardown — on the forge README you installed.
+A **forge** is installed into an empty host directory. Running `./swarm` starts
+the forge dashboard and host lieutenant; project swarms start when the operator
+creates or opens projects beneath `projects/`.
 
-`main` is not a `get-swarm-forge` product. `simple-windows` is a tag on `main`
-(last snapshot before the pack cockpit), not a product.
+The `squad`, `sprint-module-squad`, and `adversaries` branches are separate
+experimental workflows. They are not `get-swarm-forge` products.
+
+## Prerequisites
+
+- `zsh`
+- `git`
+- `tmux`
+- Babashka (`bb`)
+- At least one configured agent backend: `grok`, `codex`, `claude`, or
+  `copilot`
 
 ## Install the helper
 
-Prerequisites: `zsh`, `git`, `tmux`, Babashka (`bb`), and at least one agent
-backend (`grok`, `codex`, `claude`, or `copilot`).
+Put `get-swarm-forge` somewhere on `PATH`:
 
 ```sh
 mkdir -p ~/cmds
@@ -47,54 +55,91 @@ curl -L -o ~/cmds/get-swarm-forge \
 chmod +x ~/cmds/get-swarm-forge
 ```
 
-Put `~/cmds` on your `PATH`. Recopy the helper when it changes; a stale copy
-still behaves like the old no-argument install.
+Add `~/cmds` to `PATH`, then recopy the helper when it changes. The helper is
+the supported entry point because it composes files from more than one branch.
 
-## Use it
+## Composition
 
-In an **existing software repo**, install a pack:
+For a pack install, the helper downloads two branches:
+
+```text
+main
+  swarmforge/scripts/                    shared runtime and dashboard
+  swarmforge/constitution/articles/      shared engineering, workflow, handoffs
+
+<pack branch>
+  swarm                                  launcher
+  swarmforge/swarmforge.conf             roles, agents, and worktrees
+  swarmforge/constitution.prompt         constitution entry point
+  swarmforge/constitution/articles/      pack-local additions
+  swarmforge/roles/                       role ownership
+```
+
+The result is written into the current project. Shared article names
+`engineering.prompt`, `workflow.prompt`, and `handoffs.prompt` always come from
+`main`; a pack specializes them with `project.prompt` and `local-*.prompt`
+files.
+
+For a forge install, the named forge branch supplies the host runtime,
+lieutenant, and dashboard. `project-manager` also downloads the three pack
+branches into `packs/`; `lieutenant` carries its one template under
+`.swarmforge/project-pack/`.
+
+## Use a product
+
+Install a pack in an existing software repository:
 
 ```sh
-get-swarm-forge six-pack    # or two-pack / four-pack
+get-swarm-forge six-pack
 ./swarm
 ```
 
-Scripts and shared constitution articles come from `main`. Conf, roles, and
-`./swarm` come from the pack branch.
-
-In an **empty directory** (the forge, not a project):
+Or install a forge in an empty directory:
 
 ```sh
-get-swarm-forge project-manager   # several packs, several projects
-# or
-get-swarm-forge lieutenant        # one pipeline, card types, planner
+get-swarm-forge lieutenant
 ./swarm
 ```
 
-Then create or open projects from the dashboard. How that host works is on
-[`project-manager`](https://github.com/unclebob/swarm-forge/blob/project-manager/README.md)
-or
-[`lieutenant`](https://github.com/unclebob/swarm-forge/blob/lieutenant/README.md).
+The selected product's README describes its routes, roles, worktrees, project
+lifecycle, and dashboard behavior. The branch configuration—not this README—is
+the authority for current backend assignments and topology.
 
-## What this branch holds
+## What `main` owns
 
-- `get-swarm-forge` — the installer
-- `swarmforge/scripts/` — pack runtime and dashboard (pack-only downloads these)
-- `swarmforge/constitution/articles/` — `engineering.prompt`, `workflow.prompt`,
-  `handoffs.prompt` (law for packs; packs must not ship those filenames)
+```text
+get-swarm-forge                         product composer
+swarmforge/scripts/                    launcher, dashboard, board, handoffs
+swarmforge/constitution/articles/      shared agent rules
+swarmforge/handoff-protocol.md         durable handoff protocol
+test/                                  shared runtime tests
+```
 
-Helper changes that packs need land here first.
+Changes to shared launch, dashboard, terminal, worktree, board, or handoff
+behavior belong on `main` first. Pack branches own only their configuration,
+local constitution additions, role prompts, and launcher. Forge branches carry
+the common files needed for standalone installation and should be refreshed
+from `main` when those files change.
 
-## Constitution and handoffs
+Do not pin prompt prose with automated tests. Test observable runtime behavior
+instead.
 
-Shared articles live here. Pack-specific rules use `local-*.prompt` and
-`project.prompt` on the pack branch. Agents send work with `swarm_handoff.sh`,
-receive with `ready_for_next.sh`, and finish with `done_with_current.sh`.
+## Runtime model
 
-Protocol detail is in `swarmforge/handoff-protocol.md` on a runnable checkout.
-Do not pin prompt wording.
+At startup the composed runtime validates the configuration, initializes git
+when necessary, creates role worktrees, mirrors the managed SwarmForge files
+into them, creates isolated tmux sessions, starts the handoff daemon and local
+dashboard, and launches each configured agent backend.
 
-## Other branches
+`master` in a role configuration means the project's main checkout on its
+current branch; it is a worktree sentinel, not a required git branch name.
+Generated transport and process state lives under `.swarmforge/`; generated
+role checkouts live under `.worktrees/`.
 
-`squad`, `sprint-module-squad`, and `adversaries` are separate lines of work.
-They are not `get-swarm-forge` products.
+Agents send committed work with `swarm_handoff.sh`, accept it with
+`ready_for_next.sh`, and finish the current item with `done_with_current.sh`.
+See [the handoff protocol](swarmforge/handoff-protocol.md) for message format,
+auditing, delivery, retry, merge, and lifecycle details.
+
+The `simple-windows` tag marks the last `main` snapshot before the dashboard
+cockpit. It is historical and is not a `get-swarm-forge` product.
